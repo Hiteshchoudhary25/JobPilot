@@ -273,14 +273,34 @@ def main():
 
     if args.command == "search":
         agent.search_all_platforms(limit_per_platform=args.limit)
+        try:
+            from dashboard import generate_dashboard
+            generate_dashboard(auto_open=False)
+        except Exception:
+            pass
     elif args.command == "email":
         agent.run_cold_email_outreach()
+        try:
+            from dashboard import generate_dashboard
+            generate_dashboard(auto_open=False)
+        except Exception:
+            pass
     elif args.command == "apply":
         agent.run_auto_applications()
+        try:
+            from dashboard import generate_dashboard
+            generate_dashboard(auto_open=False)
+        except Exception:
+            pass
     elif args.command == "run":
         jobs = agent.search_all_platforms(limit_per_platform=args.limit)
         agent.run_auto_applications(jobs)
         agent.run_cold_email_outreach(jobs)
+        try:
+            from dashboard import generate_dashboard
+            generate_dashboard(auto_open=False)
+        except Exception:
+            pass
     elif args.command == "stats":
         agent.show_statistics()
     elif args.command == "login":

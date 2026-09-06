@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import threading
 from typing import Optional
@@ -31,13 +31,18 @@ class BrowserSessionManager:
         console.print("[cyan]1. If not logged in, complete your login/OTP in the browser window.[/cyan]")
         console.print("[yellow]2. If already logged in (or when done), simply press [ENTER] in this terminal or close the browser window (or press Ctrl+C).[/yellow]")
 
+        chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         try:
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=user_dir,
                     headless=False,
+                    executable_path=chrome_path if os.path.exists(chrome_path) else None,
                     viewport={'width': 1280, 'height': 800},
-                    args=['--disable-blink-features=AutomationControlled']
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-infobars'
+                    ]
                 )
 
                 page = context.pages[0] if context.pages else context.new_page()
