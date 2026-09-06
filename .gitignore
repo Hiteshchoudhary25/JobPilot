@@ -1,0 +1,34 @@
+﻿# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache & test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Sensitive environment variables & credentials
+.env
+*.env
+!.env.example
+
+# Browser automation persistent sessions (contains login cookies and tokens)
+browser_sessions/
+
+# Local databases & tracking data
+*.db
+*.sqlite3
+tracker.db
+
+# Generated reports & CSV exports
+dashboard.html
+discovered_jobs.csv
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

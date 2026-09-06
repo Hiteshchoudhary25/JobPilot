@@ -1,0 +1,67 @@
+personal_info:
+  full_name: Hitesh Choudhary
+  email: hiteshchoudhary2508@gmail.com
+  phone: +91 6375807336
+  location: Noida, India
+  current_city: Noida
+  linkedin_url: https://www.linkedin.com/in/hiteshchoudhary25/
+  github_url: https://github.com/Hiteshchoudhary25
+  # portfolio_url: https://alexjohnson.dev
+professional_summary: Java-focused software engineer with a strong foundation in OOPs and DSA, having solved 700+ problems on LeetCode in Java. Hands
+ on experience building Java components and validating data across enterprise, Salesforce-integrated platforms at Coforge. Also builds full-stack, AI-integrated apps using the MERN stack and applies Python for data processing.
+
+work_authorization:
+  authorized_in_india: true
+  authorized_in_us: false
+  requires_sponsorship: false
+compensation_and_notice:
+  current_ctc_lpa: 4.25
+  expected_ctc_lpa: 6.00
+  notice_period_days: 30
+  negotiable_notice_period: true
+skills:
+  primary:
+  - Java
+  - Salesforce
+  - Salesforce Admin
+  - Automation Engineer
+  - Python
+  - Machine Learning
+  - AWS
+  - Azure
+  secondary:
+  - Data Engineer
+  - AWS
+  - Redis
+  - GraphQL
+  - CI/CD
+  - Git
+  - Microservices
+experience:
+- title: gradudate Engineer 
+  company: Coforge Ltd (MNC)
+  location: Noida, India
+  start_date: 2025-12
+  end_date: Present
+  description: • Built and maintained 25+ Java components using Selenium WebDriver and TestNG within an OOP-based Page Object Model, 
+    working directly with enterprise platforms integrated with Salesforce, Snowflake, and CustDb. 
+    • Validated data integrity across Salesforce-integrated backend systems (CustDb, Polar, Core) using structured SQL queries, catching 
+    data-mismatch issues between transactions and database records ahead of production deployment. 
+    • Collaborated within a 4-member engineering team to design reusable Java components, improving consistency across sprints and 
+    reducing duplicate effort by ~30% on recurring release checks. 
+    • Performed REST API authentication, request/response, and status-code validation using Postman, strengthening reliability of API 
+    integrations across production systems. 
+    • Identified and logged 15–20 defects in Jira, including several high-severity issues resolved before release, contributing to platform 
+    stability for two production applications. 
+education:
+- degree: Bachelor of Technology in Computer Science
+  institution: JECRC University
+  graduation_year: 2026
+  gpa: 8.4/10.0
+answers_to_common_questions:
+  years_of_experience: 1
+  highest_education: Bachelors Degree
+  willing_to_relocate: true
+  open_to_remote: true
+  open_to_hybrid: true
+  preferred_work_mode: Hybrid or Remote

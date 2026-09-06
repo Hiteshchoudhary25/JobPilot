@@ -1,0 +1,52 @@
+search_parameters:
+  job_titles:
+  - Salesforce Developer
+  - Salesforce Admin
+  - Salesforce Administrator
+  - Salesforce CRM Developer
+  - Salesforce LWC Developer
+  - Salesforce Apex Developer
+  - Salesforce Lightning Developer
+  - Salesforce Platform Developer
+  - Junior Salesforce Developer
+  - Associate Salesforce Developer
+  - Salesforce Consultant
+  - Salesforce Technical Consultant
+  - Salesforce Integration Developer
+  - Salesforce Analyst
+  - Salesforce Support Engineer
+  - CRM Developer
+  - Salesforce & Agentforce Developer
+  - Software Engineer Salesforce
+  locations:
+  - Ahmedabad
+  - Jaipur
+  - Remote
+  - Gujarat
+  - Rajasthan
+  experience_range_years:
+    min: 1
+    max: 2
+  job_types:
+  - Full-time
+  workplace_types:
+  - Remote
+  - Hybrid
+  - On-site
+  posted_within_days: 7
+platforms_enabled:
+  linkedin: true
+  naukri: true
+  indeed: false
+filtering_rules:
+  min_fit_score: 50
+  blacklisted_companies:
+  - Revature
+  - CyberCoders
+  blacklisted_keywords:
+  - PHP
+  - WordPress Developer
+  - Mainframe
+  - Unpaid Internship
+  prioritize_easy_apply: true
+  auto_email_recruiter_if_found: true

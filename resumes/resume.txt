@@ -1,0 +1,4 @@
+﻿Sample Resume Content
+Alex Johnson - Full Stack Engineer (Python, React, AWS)
+Email: alex.johnson.dev@gmail.com | Phone: +91 9876543210
+Location: Bangalore, India
