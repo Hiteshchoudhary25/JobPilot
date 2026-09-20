@@ -33,6 +33,8 @@ class EmailSender:
     ) -> EmailRecord:
         target_resume = resume_path or self.default_resume_path
         has_resume = os.path.exists(target_resume)
+        if not has_resume:
+            console.print(f'[bold red]WARNING: Resume not found at "{target_resume}" - email will be sent WITHOUT attachment![/bold red]')
 
         if self.db.email_already_sent(recipient_email):
             console.print(f'[yellow]i Skipped emailing {recipient_email}: Already emailed previously.[/yellow]')

@@ -190,10 +190,36 @@ class JobPilotAgent:
         console.print(f"[bold]Outreach finished: Sent {emails_sent} recruiter email(s).[/bold]")
 
 
-    def run_auto_applications(self, jobs: Optional[List[JobPosting]] = None):
+    def run_auto_applications(self, jobs: Optional[List[JobPosting]] = None, include_db_jobs: bool = False):
         console.print(Panel("[bold green]Running Auto-Apply Engine[/bold green]"))
         if not jobs:
             jobs = self.search_all_platforms()
+
+        # If include_db_jobs: also load previously found LinkedIn/Naukri jobs from DB
+        if include_db_jobs:
+            console.print("[cyan]Loading previously discovered jobs from DB for retry...[/cyan]")
+            existing_ids = {j.id for j in jobs}
+            for platform in ["linkedin", "naukri"]:
+                db_rows = self.db.get_jobs_for_platform(platform)
+                for row in db_rows:
+                    if row["id"] in existing_ids:
+                        continue
+                    emails = [e.strip() for e in (row.get("recruiter_emails") or "").split(",") if e.strip()]
+                    job = JobPosting(
+                        id=row["id"],
+                        platform=row["platform"],
+                        title=row["title"],
+                        company=row["company"],
+                        location=row.get("location") or "",
+                        url=row["url"],
+                        description=row.get("description") or "",
+                        easy_apply=bool(row.get("easy_apply", 1)),
+                        recruiter_emails=emails,
+                        fit_score=row.get("fit_score") or 70,
+                    )
+                    jobs.append(job)
+                    existing_ids.add(row["id"])
+            console.print(f"[cyan]Total jobs to attempt (new + DB): {len(jobs)}[/cyan]")
 
         min_fit = self.criteria.get("filtering_rules", {}).get("min_fit_score", 50)
         applied_count = 0
@@ -260,13 +286,27 @@ class JobPilotAgent:
         else:
             self.browser_manager.interactive_login(platform)
 
+    def reset_platform(self, platform: str):
+        """Clear application records for a platform so jobs can be re-tried."""
+        if platform == "all":
+            for p in ["linkedin", "naukri"]:
+                count = self.db.reset_platform_applications(p)
+                console.print(f"[yellow]Reset {count} application records for {p.upper()}[/yellow]")
+        else:
+            count = self.db.reset_platform_applications(platform)
+            console.print(f"[bold yellow]Reset {count} application records for {platform.upper()}.[/bold yellow]")
+            console.print(f"[cyan]Jobs from {platform.upper()} can now be re-applied. Run:[/cyan]")
+            console.print(f"[bold]  python main.py apply --platform {platform} --include-db[/bold]")
+
 def main():
     parser = argparse.ArgumentParser(description="JobPilot - Autonomous Job Search & Application Agent")
-    parser.add_argument("command", choices=["search", "apply", "email", "run", "stats", "test-email", "login"],
+    parser.add_argument("command", choices=["search", "apply", "email", "run", "stats", "test-email", "login", "reset"],
                         help="Action to perform")
     parser.add_argument("--limit", type=int, default=20, help="Limit number of jobs per platform")
     parser.add_argument("--platform", choices=["linkedin", "naukri", "all"], default="linkedin",
-                        help="Platform for login action")
+                        help="Platform to target")
+    parser.add_argument("--include-db", action="store_true",
+                        help="Also retry previously discovered jobs stored in DB (use with apply/run)")
 
     args = parser.parse_args()
     agent = JobPilotAgent()
@@ -286,7 +326,7 @@ def main():
         except Exception:
             pass
     elif args.command == "apply":
-        agent.run_auto_applications()
+        agent.run_auto_applications(include_db_jobs=args.include_db)
         try:
             from dashboard import generate_dashboard
             generate_dashboard(auto_open=False)
@@ -294,7 +334,7 @@ def main():
             pass
     elif args.command == "run":
         jobs = agent.search_all_platforms(limit_per_platform=args.limit)
-        agent.run_auto_applications(jobs)
+        agent.run_auto_applications(jobs, include_db_jobs=args.include_db)
         agent.run_cold_email_outreach(jobs)
         try:
             from dashboard import generate_dashboard
@@ -305,6 +345,8 @@ def main():
         agent.show_statistics()
     elif args.command == "login":
         agent.login_platform(args.platform)
+    elif args.command == "reset":
+        agent.reset_platform(args.platform)
     elif args.command == "test-email":
         console.print("[cyan]Sending test email...[/cyan]")
         agent.email_sender.send_outreach_email(

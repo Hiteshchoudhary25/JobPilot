@@ -1,7 +1,8 @@
-﻿import os
+import os
 import re
 import time
 import random
+import subprocess
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -15,6 +16,7 @@ console = Console()
 
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 SESSION_DIR = os.path.abspath("browser_sessions/linkedin")
+CHROME_DEBUG_PORT = 9222
 
 # Explicitly reject these foreign locations using word boundaries
 BLOCKED_LOCATION_PATTERNS = [
@@ -79,6 +81,7 @@ class LinkedInScraper(BaseScraper):
                     "keywords": title,
                     "location": loc,
                     "f_TPR": f_tpr,
+                    "f_AL": "true",  # Prioritize Easy Apply jobs
                     "start": 0
                 }
 
@@ -90,6 +93,15 @@ class LinkedInScraper(BaseScraper):
 
                     soup = BeautifulSoup(resp.text, "html.parser")
                     cards = soup.find_all("li")
+
+                    # If not enough Easy Apply cards, fallback to general search for this title/loc
+                    if len(cards) < 3:
+                        del params["f_AL"]
+                        fallback_url = f"{self.BASE_SEARCH_URL}?{urllib.parse.urlencode(params)}"
+                        f_resp = requests.get(fallback_url, headers=headers, timeout=8)
+                        if f_resp.status_code == 200:
+                            f_soup = BeautifulSoup(f_resp.text, "html.parser")
+                            cards.extend(f_soup.find_all("li"))
 
                     for card in cards:
                         if len(found_jobs) >= limit:
@@ -270,183 +282,291 @@ class LinkedInScraper(BaseScraper):
             except Exception:
                 pass
 
+    def _get_playwright_context(self, p):
+        """Launch Chrome with saved session. Returns (owner, context, page)."""
+        ctx = p.chromium.launch_persistent_context(
+            SESSION_DIR,
+            headless=False,
+            executable_path=CHROME_PATH if os.path.exists(CHROME_PATH) else None,
+            no_viewport=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--start-maximized",
+            ],
+            ignore_default_args=["--enable-automation"],
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        return ctx, ctx, pg
+
+    def _find_apply_button(self, page):
+        """Find the Easy Apply or Apply button/link using multiple strategies.
+        Returns (element_handle, is_easy_apply, direct_apply_url) or (None, False, None)."""
+        # Strategy 1: Evaluate DOM for a, button, [role='button']
+        try:
+            res = page.evaluate("""() => {
+                const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
+                // 1. Search for Easy Apply first
+                for (const el of elements) {
+                    const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const href = el.getAttribute('href') || '';
+                    if (text.includes('easy apply') || aria.includes('easy apply') || href.includes('openSDUIApplyFlow') || href.includes('/apply/')) {
+                        return { found: true, is_easy: true, href: href || null, text: text || aria };
+                    }
+                }
+                // 2. Search for External Apply
+                for (const el of elements) {
+                    const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const cls = (el.className || '').toString().toLowerCase();
+                    if ((text === 'apply' || text.startsWith('apply ') || aria.includes('apply') || cls.includes('jobs-apply-button')) && !text.includes('easy')) {
+                        return { found: true, is_easy: false, href: el.getAttribute('href') || null, text: text || aria };
+                    }
+                }
+                return { found: false };
+            }""")
+            if res and res.get("found"):
+                is_easy = res.get("is_easy", False)
+                href = res.get("href")
+                btn_text = res.get("text", "")
+                console.print(f"[dim]  Found apply element ({'Easy Apply' if is_easy else 'External'}): '{btn_text}'[/dim]")
+                if is_easy:
+                    handle = page.evaluate_handle("""() => {
+                        const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
+                        return elements.find(el => {
+                            const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                            const h = el.getAttribute('href') || '';
+                            return text.includes('easy apply') || aria.includes('easy apply') || h.includes('openSDUIApplyFlow') || h.includes('/apply/');
+                        }) || null;
+                    }""")
+                else:
+                    handle = page.evaluate_handle("""() => {
+                        const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
+                        return elements.find(el => {
+                            const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                            const cls = (el.className || '').toString().toLowerCase();
+                            return (text === 'apply' || text.startsWith('apply ') || aria.includes('apply') || cls.includes('jobs-apply-button')) && !text.includes('easy');
+                        }) || null;
+                    }""")
+                elem = handle.as_element()
+                return elem, is_easy, href
+        except Exception as e:
+            console.print(f"[dim]  _find_apply_button note: {e}[/dim]")
+
+        # Strategy 2: Fallback Playwright locators
+        for sel in ["a:has-text('Easy Apply')", "button:has-text('Easy Apply')", "[aria-label*='Easy Apply']"]:
+            try:
+                loc = page.locator(sel).first
+                if loc.is_visible():
+                    return loc.element_handle(), True, loc.get_attribute("href")
+            except Exception:
+                continue
+
+        for sel in ["a:has-text('Apply')", "button:has-text('Apply')", ".jobs-apply-button"]:
+            try:
+                loc = page.locator(sel).first
+                if loc.is_visible():
+                    return loc.element_handle(), False, loc.get_attribute("href")
+            except Exception:
+                continue
+
+        return None, False, None
+
+    def _click_modal_button(self, page, modal, texts: list) -> bool:
+        """Click the first visible button in modal matching any of the given texts."""
+        for text in texts:
+            try:
+                loc = modal.locator(f"button:has-text('{text}')").first
+                if loc.is_visible():
+                    loc.click()
+                    return True
+            except Exception:
+                pass
+            try:
+                btn = modal.query_selector(f"button[aria-label*='{text}']")
+                if btn and btn.is_visible():
+                    btn.click()
+                    return True
+            except Exception:
+                pass
+        return False
+
     def apply_job(self, job: JobPosting, user_profile: Dict[str, Any]) -> bool:
-        """Navigates to live LinkedIn job, clicks Easy Apply, autofills multi-step form questions, and submits."""
+        """Navigate to LinkedIn job page, click Easy Apply, autofill form, and submit."""
         console.print(f"[bold cyan]Navigating live LinkedIn job page:[/bold cyan] {job.title} at {job.company}")
 
         try:
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    SESSION_DIR,
-                    headless=True,
-                    executable_path=CHROME_PATH if os.path.exists(CHROME_PATH) else None,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars"
-                    ],
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
-                page = context.pages[0] if context.pages else context.new_page()
+                owner, context, page = self._get_playwright_context(p)
 
                 try:
-                    page.goto(job.url, wait_until="domcontentloaded", timeout=25000)
-                    page.wait_for_timeout(2500)
+                    page.goto(job.url, wait_until="domcontentloaded", timeout=30000)
 
-                    # Check for login redirection
-                    if "login" in page.url or "authwall" in page.url:
+                    # Wait for network to settle (LinkedIn is a heavy SPA)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        page.wait_for_timeout(3000)
+
+                    current_url = page.url
+                    if "login" in current_url or "authwall" in current_url or "uas/login" in current_url:
                         console.print("[yellow]LinkedIn session requires login. Run: python main.py login --platform linkedin[/yellow]")
-                        context.close()
+                        owner.close()
                         return False
 
-                    # 1. Check if already applied
-                    applied_badge = page.query_selector(".artdeco-inline-feedback--success, .jobs-s-apply__applied-date")
-                    if applied_badge or "applied" in page.inner_text("body").lower()[:500]:
+                    # 1. Already applied check
+                    applied_badge = page.query_selector(
+                        ".jobs-s-apply__application-link, "
+                        ".artdeco-inline-feedback--success, "
+                        ".jobs-s-apply__applied-date, "
+                        "[data-test-job-apply-status='applied']"
+                    )
+                    if applied_badge:
                         console.print(f"[green][OK] Already applied on LinkedIn: {job.title} at {job.company}[/green]")
                         self.db.record_application(ApplicationRecord(
-                            job_id=job.id,
-                            platform="linkedin",
-                            company=job.company,
-                            role_title=job.title,
-                            job_url=job.url,
+                            job_id=job.id, platform="linkedin", company=job.company,
+                            role_title=job.title, job_url=job.url,
                             status=ApplicationStatus.APPLIED_EASY,
                             notes="Already submitted previously on LinkedIn"
                         ))
-                        context.close()
+                        owner.close()
                         return True
 
-                    # 2. Check for Easy Apply button
-                    apply_btn = page.query_selector("button.jobs-apply-button, button:has-text('Easy Apply')")
-                    if not apply_btn:
-                        # Check external Apply button
-                        ext_btn = page.query_selector("button:has-text('Apply')")
-                        if ext_btn:
-                            console.print(f"[cyan]-> External company website application: {job.company} (queued in dashboard)[/cyan]")
-                            self.db.record_application(ApplicationRecord(
-                                job_id=job.id,
-                                platform="linkedin",
-                                company=job.company,
-                                role_title=job.title,
-                                job_url=job.url,
-                                status=ApplicationStatus.REQUIRES_MANUAL,
-                                notes="External application - apply on company website"
-                            ))
-                        else:
-                            console.print(f"[dim]No active apply button for {job.company}[/dim]")
-                        context.close()
+                    # 2. Find apply button / link
+                    apply_btn, is_easy_apply, direct_apply_url = self._find_apply_button(page)
+
+                    if not apply_btn and not direct_apply_url:
+                        console.print(f"[bold red]No apply button found for {job.company}[/bold red]")
+                        owner.close()
                         return False
 
-                    btn_text = apply_btn.inner_text().lower()
-                    if "easy apply" not in btn_text:
-                        console.print(f"[cyan]-> External application: {job.company} (queued in dashboard)[/cyan]")
+                    if not is_easy_apply:
+                        console.print(f"[cyan]-> External company website application: {job.company} (queued in dashboard)[/cyan]")
                         self.db.record_application(ApplicationRecord(
-                            job_id=job.id,
-                            platform="linkedin",
-                            company=job.company,
-                            role_title=job.title,
-                            job_url=job.url,
+                            job_id=job.id, platform="linkedin", company=job.company,
+                            role_title=job.title, job_url=job.url,
                             status=ApplicationStatus.REQUIRES_MANUAL,
                             notes="External application - apply on company website"
                         ))
-                        context.close()
+                        owner.close()
                         return False
 
-                    # 3. Open Easy Apply multi-step modal
-                    console.print(f"[bold green]Found Easy Apply! Opening application modal for {job.company}...[/bold green]")
-                    apply_btn.click()
-                    page.wait_for_timeout(2500)
+                    # 3. Open Easy Apply flow
+                    console.print(f"[bold green]Found Easy Apply! Launching application flow for {job.company}...[/bold green]")
+                    if direct_apply_url and direct_apply_url.startswith("http"):
+                        page.goto(direct_apply_url, wait_until="domcontentloaded", timeout=25000)
+                        page.wait_for_timeout(3000)
+                    elif apply_btn:
+                        try:
+                            apply_btn.scroll_into_view_if_needed()
+                            apply_btn.click()
+                        except Exception:
+                            page.evaluate("arguments => arguments[0].click()", [apply_btn])
+                        page.wait_for_timeout(3000)
 
-                    modal = page.query_selector("div[role='dialog'], .jobs-easy-apply-modal")
+                    # Wait for modal
+                    modal = None
+                    for modal_sel in ["div[role='dialog']", ".jobs-easy-apply-modal", ".artdeco-modal"]:
+                        try:
+                            page.wait_for_selector(modal_sel, timeout=5000, state="visible")
+                            modal = page.query_selector(modal_sel)
+                            if modal:
+                                break
+                        except Exception:
+                            continue
+
                     if not modal:
-                        console.print(f"[yellow]Could not detect application modal for {job.company}[/yellow]")
-                        context.close()
+                        console.print(f"[yellow]Modal did not open for {job.company}[/yellow]")
+                        owner.close()
                         return False
 
-                    max_steps = 8
+                    max_steps = 10
                     submitted = False
 
                     for step in range(max_steps):
-                        # Autofill inputs on current step
+                        page.wait_for_timeout(800)
                         self._fill_easy_apply_step(modal, user_profile)
-                        page.wait_for_timeout(1000)
+                        page.wait_for_timeout(600)
 
-                        # Check for Submit application button
-                        submit_btn = modal.query_selector("button:has-text('Submit application'), button[aria-label='Submit application']")
-                        if submit_btn and submit_btn.is_visible():
-                            console.print(f"[bold green]Submitting Easy Apply application to {job.company}...[/bold green]")
-                            submit_btn.click()
-                            page.wait_for_timeout(3500)
+                        # Submit?
+                        if self._click_modal_button(page, modal, ["Submit application", "Submit"]):
+                            console.print(f"[bold green]Submitting Easy Apply for {job.company}...[/bold green]")
+                            page.wait_for_timeout(4000)
                             submitted = True
                             break
 
-                        # Check for Review button
-                        review_btn = modal.query_selector("button:has-text('Review'), button[aria-label='Review your application']")
-                        if review_btn and review_btn.is_visible():
-                            review_btn.click()
+                        # Review?
+                        if self._click_modal_button(page, modal, ["Review", "Review your application"]):
                             page.wait_for_timeout(1500)
                             continue
 
-                        # Check for Next step button
-                        next_btn = modal.query_selector("button:has-text('Next'), button[aria-label='Continue to next step']")
-                        if next_btn and next_btn.is_visible():
-                            next_btn.click()
+                        # Next?
+                        if self._click_modal_button(page, modal, ["Next", "Continue to next step"]):
                             page.wait_for_timeout(1500)
-
-                            # Check for validation errors
+                            # Check for validation errors and retry fill
                             err = modal.query_selector(".artdeco-inline-feedback--error, [data-test-form-element-error-messages]")
-                            if err and err.is_visible():
-                                console.print(f"[yellow]Required question noticed: {err.inner_text().strip()[:60]}[/yellow]")
-                                self._fill_easy_apply_step(modal, user_profile)
-                                page.wait_for_timeout(500)
-                                next_btn.click()
-                                page.wait_for_timeout(1500)
+                            if err:
+                                try:
+                                    if err.is_visible():
+                                        console.print(f"[yellow]  Validation notice: {err.inner_text().strip()[:80]}[/yellow]")
+                                        self._fill_easy_apply_step(modal, user_profile)
+                                        page.wait_for_timeout(400)
+                                        self._click_modal_button(page, modal, ["Next", "Continue to next step"])
+                                        page.wait_for_timeout(1500)
+                                except Exception:
+                                    pass
                             continue
-                        else:
-                            break
+
+                        # No recognizable button — modal may be finished or stuck
+                        break
 
                     if submitted:
-                        done_btn = page.query_selector("button:has-text('Done'), button[aria-label='Dismiss']")
-                        if done_btn and done_btn.is_visible():
-                            done_btn.click()
-
-                        console.print(f"[bold green][OK] Successfully submitted LinkedIn Easy Apply: {job.title} at {job.company}[/bold green]")
+                        self._click_modal_button(page, page, ["Done", "Dismiss"])
+                        console.print(f"[bold green][OK] LinkedIn Easy Apply submitted: {job.title} at {job.company}[/bold green]")
                         self.db.record_application(ApplicationRecord(
-                            job_id=job.id,
-                            platform="linkedin",
-                            company=job.company,
-                            role_title=job.title,
-                            job_url=job.url,
+                            job_id=job.id, platform="linkedin", company=job.company,
+                            role_title=job.title, job_url=job.url,
                             status=ApplicationStatus.APPLIED_EASY,
                             notes="Successfully applied via LinkedIn Easy Apply autofill"
                         ))
-                        context.close()
+                        owner.close()
                         return True
                     else:
-                        # Modal required complex steps, dismiss gracefully and queue
-                        dismiss = modal.query_selector("button[aria-label='Dismiss']")
-                        if dismiss:
-                            dismiss.click()
-                            page.wait_for_timeout(1000)
-                            discard = page.query_selector("button[data-control-name='discard_application_confirm_btn']")
-                            if discard: discard.click()
+                        # Dismiss modal gracefully
+                        try:
+                            dismiss = modal.query_selector("button[aria-label='Dismiss']")
+                            if dismiss:
+                                dismiss.click()
+                                page.wait_for_timeout(1000)
+                                discard = page.query_selector("button:has-text('Discard')")
+                                if discard:
+                                    discard.click()
+                        except Exception:
+                            pass
 
-                        console.print(f"[yellow]-> Easy Apply required manual inputs: queued in dashboard for {job.company}[/yellow]")
+                        console.print(f"[yellow]-> Easy Apply needed manual input: queued for {job.company}[/yellow]")
                         self.db.record_application(ApplicationRecord(
-                            job_id=job.id,
-                            platform="linkedin",
-                            company=job.company,
-                            role_title=job.title,
-                            job_url=job.url,
+                            job_id=job.id, platform="linkedin", company=job.company,
+                            role_title=job.title, job_url=job.url,
                             status=ApplicationStatus.REQUIRES_MANUAL,
-                            notes="Easy Apply form required manual review - click link from dashboard to finish"
+                            notes="Easy Apply required manual review - open job URL from dashboard to finish"
                         ))
-                        context.close()
+                        owner.close()
                         return False
 
                 except Exception as e:
-                    console.print(f"[yellow]Error during LinkedIn live apply for {job.company}: {e}[/yellow]")
-                    context.close()
+                    console.print(f"[yellow]Error during LinkedIn apply for {job.company}: {e}[/yellow]")
+                    try:
+                        owner.close()
+                    except Exception:
+                        pass
                     return False
 
         except Exception as e:
             console.print(f"[red]Error in LinkedIn apply browser: {e}[/red]")
             return False
+

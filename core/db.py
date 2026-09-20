@@ -152,3 +152,25 @@ class Database:
                 "by_platform": by_platform,
                 "recent_applications": recent_apps
             }
+
+    def reset_platform_applications(self, platform: str) -> int:
+        """Delete all application records for a platform so jobs can be re-tried.
+        Returns number of records deleted."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM applications WHERE platform = ?", (platform,))
+            conn.commit()
+            return cursor.rowcount
+
+    def get_jobs_for_platform(self, platform: str) -> List[Dict[str, Any]]:
+        """Fetch all stored jobs for a platform from the DB."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, platform, title, company, location, url, description,
+                       easy_apply, recruiter_emails, fit_score, fit_reason
+                FROM jobs WHERE platform = ?
+                ORDER BY created_at DESC
+            """, (platform,))
+            return [dict(row) for row in cursor.fetchall()]
+

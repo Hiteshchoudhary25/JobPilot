@@ -17,5 +17,4 @@ email_outreach:
   sender_email: hiteshchoudhary2508@gmail.com
   sender_password_env_var: EMAIL_APP_PASSWORD
   max_emails_per_day: 20
-  default_resume_path: ./resumes/resume.pdf
-  resume_path: ./resumes/HiteshChoudhary_Resume.pdf
+  default_resume_path: ./resumes/HiteshChoudhary_Resume.pdf
