@@ -174,3 +174,19 @@ class Database:
             """, (platform,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def mark_job_applied(self, job_id: str, notes: str = "Manually applied by user") -> bool:
+        """Marks a job as applied in the applications table."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT platform, company, title, url FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            cursor.execute("""
+                INSERT OR REPLACE INTO applications
+                (job_id, platform, company, role_title, job_url, status, applied_at, notes)
+                VALUES (?, ?, ?, ?, ?, 'APPLIED_EASY', CURRENT_TIMESTAMP, ?)
+            """, (job_id, row["platform"], row["company"], row["title"], row["url"], notes))
+            conn.commit()
+            return True
+

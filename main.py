@@ -323,8 +323,9 @@ class JobPilotAgent:
 
 def main():
     parser = argparse.ArgumentParser(description="JobPilot - Autonomous Job Search & Application Agent")
-    parser.add_argument("command", choices=["search", "apply", "email", "run", "stats", "test-email", "login", "reset"],
+    parser.add_argument("command", choices=["search", "apply", "email", "run", "stats", "test-email", "login", "reset", "dashboard", "mark-applied"],
                         help="Action to perform")
+    parser.add_argument("job_id", nargs="?", default="", help="Job ID (for mark-applied)")
     parser.add_argument("--limit", type=int, default=20, help="Limit number of jobs per platform")
     parser.add_argument("--platform", choices=["linkedin", "naukri", "all"], default="linkedin",
                         help="Platform to target")
@@ -370,6 +371,23 @@ def main():
         agent.login_platform(args.platform)
     elif args.command == "reset":
         agent.reset_platform(args.platform)
+    elif args.command == "dashboard":
+        from dashboard import serve_dashboard
+        serve_dashboard()
+    elif args.command == "mark-applied":
+        if not args.job_id:
+            console.print("[red]Error: Please specify the job_id (e.g. python main.py mark-applied <job_id>)[/red]")
+        else:
+            success = agent.db.mark_job_applied(args.job_id)
+            if success:
+                console.print(f"[bold green]Successfully marked job '{args.job_id}' as APPLIED in tracker.db[/bold green]")
+                try:
+                    from dashboard import generate_dashboard
+                    generate_dashboard(auto_open=False)
+                except Exception:
+                    pass
+            else:
+                console.print(f"[red]Job ID '{args.job_id}' not found in database.[/red]")
     elif args.command == "test-email":
         console.print("[cyan]Sending test email...[/cyan]")
         agent.email_sender.send_outreach_email(

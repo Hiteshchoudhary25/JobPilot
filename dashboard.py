@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 import os
 import webbrowser
 import json
@@ -118,7 +118,7 @@ def build_html(d):
     generated_at          = d["generated_at"]
 
     all_jobs_rows = ""
-    for r in d["all_discovered"]:
+    for idx, r in enumerate(d["all_discovered"], 1):
         score = r.get("fit_score")
         if isinstance(score, int):
             color = "#22c55e" if score >= 70 else "#f59e0b" if score >= 50 else "#ef4444"
@@ -127,18 +127,24 @@ def build_html(d):
             score_badge = '<span style="color:#888">-</span>'
 
         raw_status = r.get("app_status") or "FOUND"
+        safe_company = (r.get("company") or "").replace("'", "\\'").replace('"', '&quot;')
+        jid = str(r.get("id") or "")
         if raw_status == "APPLIED_EASY":
             status_key = "applied"
             status_badge = '<span style="background:#15803d;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600">APPLIED</span>'
+            action_btn = '<span style="color:#22c55e;font-size:12px;font-weight:600">✓ Applied</span>'
         elif raw_status == "REQUIRES_MANUAL":
             status_key = "external"
             status_badge = '<span style="background:#b45309;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600" title="Click link to apply on company site">QUEUED (EXTERNAL)</span>'
+            action_btn = f'<button class="mark-btn" onclick="markJobApplied(\'{jid}\', \'{idx}\', \'{safe_company}\', this)">✓ Mark Applied</button>'
         elif raw_status == "EMAIL_SENT":
             status_key = "email"
             status_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600">EMAIL SENT</span>'
+            action_btn = f'<button class="mark-btn" onclick="markJobApplied(\'{jid}\', \'{idx}\', \'{safe_company}\', this)">✓ Mark Applied</button>'
         else:
             status_key = "found"
             status_badge = '<span style="background:#334155;color:#94a3b8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600">FOUND</span>'
+            action_btn = f'<button class="mark-btn" onclick="markJobApplied(\'{jid}\', \'{idx}\', \'{safe_company}\', this)">✓ Mark Applied</button>'
 
         url = r.get("url") or "#"
         ts  = (str(r.get("created_at") or ""))[:16].replace("T", " ")
@@ -146,15 +152,17 @@ def build_html(d):
         email_display = f'<span style="color:#c084fc;font-weight:500">{emails}</span>' if emails else '<span style="color:#64748b">-</span>'
 
         all_jobs_rows += f"""
-        <tr class="job-row" data-plat="{(r['platform'] or '').lower()}" data-status="{status_key}" data-search="{(r['title'] or '').lower()} {(r['company'] or '').lower()} {(r.get('location') or '').lower()}">
+        <tr class="job-row" id="row_{r['id']}" data-jobid="{r['id']}" data-plat="{(r['platform'] or '').lower()}" data-status="{status_key}" data-search="{(r['title'] or '').lower()} {(r['company'] or '').lower()} {(r.get('location') or '').lower()}">
+          <td style="color:#94a3b8;font-weight:700;text-align:center;font-size:12px">{idx}</td>
           <td><a href="{url}" target="_blank" style="color:#60a5fa;text-decoration:none;font-weight:600">{r["title"]}</a></td>
           <td style="color:#f1f5f9;font-weight:500">{r["company"]}</td>
           <td><span class="badge">{(r["platform"] or "").upper()}</span></td>
           <td style="color:#cbd5e1">{r.get("location") or "-"}</td>
           <td>{score_badge}</td>
-          <td>{status_badge}</td>
+          <td class="status-cell">{status_badge}</td>
           <td style="font-size:12px">{email_display}</td>
           <td style="color:#94a3b8;font-size:12px">{ts}</td>
+          <td class="action-cell" style="text-align:center">{action_btn}</td>
         </tr>"""
 
     return f"""<!DOCTYPE html>
@@ -173,6 +181,8 @@ body{{background:#0f172a;color:#e2e8f0;font-family:"Segoe UI",system-ui,sans-ser
 .btn-group{{display:flex;gap:10px}}
 .btn{{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13.5px;text-decoration:none;display:inline-flex;align-items:center;transition:all .2s}}
 .btn:hover{{background:rgba(255,255,255,.28)}}
+.mark-btn{{background:#1e293b;border:1px solid #10b981;color:#34d399;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s;white-space:nowrap}}
+.mark-btn:hover{{background:#10b981;color:#fff;box-shadow:0 2px 8px rgba(16,185,129,.4)}}
 .main{{padding:28px 32px;max-width:1400px;margin:auto}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px}}
 .card{{background:#1e293b;border-radius:14px;padding:20px 22px;border:1px solid #334155;position:relative;overflow:hidden}}
@@ -209,6 +219,7 @@ td{{padding:11px 12px;border-bottom:1px solid #283548;vertical-align:middle}}
 tr:hover td{{background:#263348}}
 .badge{{background:#334155;color:#94a3b8;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}}
 .footer{{text-align:center;color:#475569;font-size:12px;padding:20px}}
+#toast{{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;font-size:13.5px;box-shadow:0 4px 16px rgba(0,0,0,0.4);z-index:9999;transition:opacity 0.3s ease;opacity:0;pointer-events:none}}
 @media(max-width:900px){{.charts{{grid-template-columns:1fr}}.chart-box.wide{{grid-column:span 1}}}}
 </style>
 </head>
@@ -303,8 +314,10 @@ tr:hover td{{background:#263348}}
       <table id="jobsTable">
         <thead>
           <tr>
+            <th style="width:40px;text-align:center">#</th>
             <th>Role Title</th><th>Company</th><th>Platform</th><th>Location</th>
             <th>Fit Score</th><th>Status</th><th>Recruiter Email</th><th>Discovered</th>
+            <th style="width:130px;text-align:center">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -315,6 +328,8 @@ tr:hover td{{background:#263348}}
   </div>
 
 </div>
+
+<div id="toast"></div>
 
 <div class="footer">Generated at {generated_at} &nbsp;&middot;&nbsp; JobPilot Database: tracker.db ({total_discovered} jobs)</div>
 
@@ -380,6 +395,85 @@ function filterTable() {{
     r.style.display = (matchesPlat && matchesStatus && matchesQuery) ? "" : "none";
   }});
 }}
+
+function markJobApplied(jobId, rowNum, company, btn) {{
+  const row = document.getElementById('row_' + jobId) || btn.closest('.job-row');
+  if (!row) return;
+
+  const prevStatus = row.getAttribute('data-status');
+  if (prevStatus === 'applied') return;
+
+  // 1. Update UI Status Badge
+  const statusCell = row.querySelector('.status-cell');
+  if (statusCell) {{
+    statusCell.innerHTML = '<span style="background:#15803d;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600">APPLIED</span>';
+  }}
+
+  // 2. Update Action Cell
+  const actionCell = row.querySelector('.action-cell');
+  if (actionCell) {{
+    actionCell.innerHTML = '<span style="color:#22c55e;font-size:12px;font-weight:600">✓ Applied</span>';
+  }}
+
+  // 3. Update data-status
+  row.setAttribute('data-status', 'applied');
+
+  // 4. Update KPI numbers dynamically
+  const appliedEl = document.querySelector('.applied-val');
+  if (appliedEl) appliedEl.textContent = parseInt(appliedEl.textContent || '0') + 1;
+  const todayEl = document.querySelector('.today-val');
+  if (todayEl) todayEl.textContent = parseInt(todayEl.textContent || '0') + 1;
+  if (prevStatus === 'external') {{
+    const queuedEl = document.querySelector('.queued-val');
+    if (queuedEl) queuedEl.textContent = Math.max(0, parseInt(queuedEl.textContent || '0') - 1);
+  }}
+
+  // 5. Store in localStorage so it persists in browser
+  localStorage.setItem('job_applied_' + jobId, 'true');
+
+  // 6. Send sync request to local API (updates tracker.db)
+  const payload = JSON.stringify({{ job_id: jobId, status: 'APPLIED_EASY' }});
+  fetch('/api/update-status', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: payload
+  }}).catch(() => {{
+    fetch('http://127.0.0.1:8000/api/update-status', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: payload
+    }}).catch(() => {{}});
+  }});
+
+  // 7. Show Toast
+  showToast('Job #' + rowNum + ' (' + company + ') marked as Applied!');
+}}
+
+function showToast(msg) {{
+  let t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.style.opacity = '1';
+  setTimeout(() => {{ t.style.opacity = '0'; }}, 3200);
+}}
+
+// Reconcile localStorage overrides on page load
+window.addEventListener('DOMContentLoaded', () => {{
+  document.querySelectorAll('.job-row').forEach(row => {{
+    const jobId = row.getAttribute('data-jobid');
+    if (localStorage.getItem('job_applied_' + jobId) === 'true') {{
+      const statusCell = row.querySelector('.status-cell');
+      if (statusCell) {{
+        statusCell.innerHTML = '<span style="background:#15803d;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600">APPLIED</span>';
+      }}
+      const actionCell = row.querySelector('.action-cell');
+      if (actionCell) {{
+        actionCell.innerHTML = '<span style="color:#22c55e;font-size:12px;font-weight:600">✓ Applied</span>';
+      }}
+      row.setAttribute('data-status', 'applied');
+    }}
+  }});
+}});
 </script>
 </body>
 </html>"""
@@ -399,5 +493,64 @@ def generate_dashboard(auto_open=True):
     else:
         print(f"[Dashboard automatically refreshed: {abs_path}]")
 
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+class DashboardHandler(SimpleHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == "/api/update-status":
+            try:
+                length = int(self.headers.get("content-length", 0))
+                raw_body = self.rfile.read(length).decode("utf-8")
+                body = json.loads(raw_body)
+                job_id = body.get("job_id")
+                from core.db import Database
+                db = Database(DB_PATH)
+                success = db.mark_job_applied(job_id)
+                generate_dashboard(auto_open=False)
+                self.send_response(200 if success else 400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": success}).encode("utf-8"))
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+def serve_dashboard(port=8000):
+    generate_dashboard(auto_open=False)
+    server_address = ("127.0.0.1", port)
+    server = ThreadingHTTPServer(server_address, DashboardHandler)
+    url = f"http://127.0.0.1:{port}/dashboard.html"
+    print(f"\n=======================================================")
+    print(f"  JobPilot Live Dashboard Server Running!")
+    print(f"  URL: {url}")
+    print(f"  Status changes made in the dashboard sync directly with tracker.db")
+    print(f"  Press Ctrl+C to stop the server.")
+    print(f"=======================================================\n")
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping dashboard server...")
+        server.server_close()
+
 if __name__ == "__main__":
-    generate_dashboard(auto_open=True)
+    import sys
+    if "--serve" in sys.argv:
+        serve_dashboard()
+    else:
+        generate_dashboard(auto_open=True)
