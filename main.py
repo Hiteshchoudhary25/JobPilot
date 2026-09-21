@@ -2,7 +2,7 @@ import os
 import sys
 import yaml
 import argparse
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
@@ -56,6 +56,18 @@ class JobPilotAgent:
         title_lower = job_title.lower()
         return any(s in title_lower for s in SENIORITY_BLACKLIST)
 
+    def _is_allowed_location(self, job: JobPosting) -> Tuple[bool, str]:
+        """Enforces that non-local cities (Pune, Hyderabad, Bangalore) must be strictly Remote or Hybrid."""
+        restricted_cities = self.criteria.get("filtering_rules", {}).get("remote_or_hybrid_only_cities", [])
+        combined_text = f"{job.location} {job.title} {job.description}".lower()
+
+        for city in restricted_cities:
+            if city.lower() in job.location.lower():
+                is_remote_or_hybrid = any(k in combined_text for k in ["remote", "hybrid", "work from home", "wfh", "telecommute"])
+                if not is_remote_or_hybrid:
+                    return False, f"On-site in {city} (only Remote/Hybrid accepted for {city})"
+        return True, ""
+
     def search_all_platforms(self, limit_per_platform: int = 20) -> List[JobPosting]:
         console.print(Panel("[bold blue]Starting Multi-Platform Job Search & Ingestion[/bold blue]"))
         all_jobs: List[JobPosting] = []
@@ -80,6 +92,12 @@ class JobPilotAgent:
                 if any(b.lower() in job.title.lower() for b in blacklisted):
                     job.fit_score = 0
                     job.fit_reason = "Contains blacklisted keyword"
+
+                # Check city-specific remote/hybrid rule (Pune, Hyderabad, Bangalore must be Remote/Hybrid)
+                allowed_loc, loc_reason = self._is_allowed_location(job)
+                if not allowed_loc:
+                    job.fit_score = 0
+                    job.fit_reason = loc_reason
 
                 self.db.save_job(job)
                 all_jobs.append(job)
@@ -240,6 +258,11 @@ class JobPilotAgent:
             if self._is_too_senior(job.title):
                 console.print(f"[dim]Skipping senior/irrelevant role: {job.title} at {job.company}[/dim]")
                 skipped_senior += 1
+                continue
+
+            allowed_loc, loc_reason = self._is_allowed_location(job)
+            if not allowed_loc:
+                console.print(f"[dim]Skipping on-site non-local role: {job.title} at {job.company} ({loc_reason})[/dim]")
                 continue
 
             scraper = self.scrapers.get(job.platform)

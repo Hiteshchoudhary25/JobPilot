@@ -1,27 +1,24 @@
-﻿search_parameters:
+search_parameters:
   job_titles:
-    - QA Automation Engineer
-    - Software Development Engineer in Test (SDET)
-    - Associate SDET
-    - Test Automation Engineer
-    - Automation Test Engineer - Java
-    - Automation Engineer - Python
-    - Framework Automation Engineer
-    - QA Engineer
-    - Software Quality Assurance Engineer
-    - Quality Engineer (Tester)
-    - Software Test Engineer
-    - QA Analyst
-    - Salesforce QA Engineer
     - Salesforce Developer
+    - Salesforce QA Engineer
+    - Salesforce QA Automation Engineer
+    - Salesforce Administrator
     - Salesforce Admin
-    - CRM Developer
+    - Salesforce Tester
+    - Junior Salesforce Developer
+    - Associate Salesforce Developer
+    - Salesforce Lightning Developer
+    - Salesforce CRM Developer
   locations:
     - Ahmedabad
     - Jaipur
-    - Remote
     - Gujarat
     - Rajasthan
+    - Remote
+    - Pune
+    - Hyderabad
+    - Bangalore
   experience_range_years:
     min: 1
     max: 2
@@ -38,6 +35,11 @@ platforms_enabled:
   indeed: false
 filtering_rules:
   min_fit_score: 50
+  remote_or_hybrid_only_cities:
+    - Pune
+    - Hyderabad
+    - Bangalore
+    - Bengaluru
   blacklisted_companies:
     - Revature
     - CyberCoders
