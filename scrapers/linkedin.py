@@ -170,7 +170,7 @@ class LinkedInScraper(BaseScraper):
 
         return found_jobs
 
-    def _fill_easy_apply_step(self, modal, user_profile: Dict[str, Any]):
+    def _fill_easy_apply_step(self, modal, user_profile: Dict[str, Any], page=None):
         """Intelligently detects form questions, labels, radios, and dropdowns, then autofills them."""
         personal = user_profile.get("personal_info", {})
         comp = user_profile.get("compensation_and_notice", {})
@@ -201,14 +201,70 @@ class LinkedInScraper(BaseScraper):
                     inp.fill(personal.get("email", "hiteshchoudhary2508@gmail.com"))
                 elif any(w in label_text for w in ["experience", "years", "how many"]):
                     inp.fill(str(answers.get("years_of_experience", 1)))
-                elif "current" in label_text and any(w in label_text for w in ["ctc", "salary", "pay"]):
-                    inp.fill(str(comp.get("current_ctc_lpa", 4.25)))
-                elif "expected" in label_text and any(w in label_text for w in ["ctc", "salary", "pay"]):
-                    inp.fill(str(comp.get("expected_ctc_lpa", 6.0)))
+                elif any(w in label_text for w in ["ctc", "salary", "compensation", "package", "pay"]):
+                    is_expected = any(w in label_text for w in ["expected", "desired", "target", "look"])
+                    min_attr = inp.get_attribute("min") or ""
+                    step_attr = inp.get_attribute("step") or ""
+                    is_hundreds = any(w in label_text for w in ["100", "hundred", "hundreds"])
+                    is_thousands = any(w in label_text for w in ["thousand", "thousands", "'000", "in k"])
+                    is_lakhs = any(w in label_text for w in ["lpa", "lakh", "lakhs", "lac", "lacs"])
+                    is_full_inr = (
+                        any(w in label_text for w in ["inr", "rupee", "rupees", "per annum", "annual", "full", "whole", "exact", "0000"]) or
+                        (min_attr.isdigit() and int(min_attr) >= 10000) or
+                        (step_attr == "1" and not is_lakhs)
+                    )
+
+                    if is_expected:
+                        if is_hundreds:
+                            val = str(comp.get("expected_ctc_hundreds", 6000))
+                        elif is_thousands:
+                            val = "600"
+                        elif is_full_inr:
+                            val = str(comp.get("expected_ctc_inr", 600000))
+                        else:
+                            val = str(comp.get("expected_ctc_lpa", 6.0))
+                    else:
+                        if is_hundreds:
+                            val = str(comp.get("current_ctc_hundreds", 4250))
+                        elif is_thousands:
+                            val = "425"
+                        elif is_full_inr:
+                            val = str(comp.get("current_ctc_inr", 425000))
+                        else:
+                            val = str(comp.get("current_ctc_lpa", 4.25))
+                    inp.fill(val)
                 elif "notice" in label_text:
                     inp.fill(str(comp.get("notice_period_days", 30)))
                 elif any(w in label_text for w in ["city", "location", "address"]):
-                    inp.fill(personal.get("location", "Ahmedabad"))
+                    target_loc = personal.get("location", "Noida, Uttar Pradesh, India")
+                    try:
+                        inp.click()
+                        inp.fill("")
+                        # Type city sequentially to trigger LinkedIn typeahead suggestions
+                        inp.press_sequentially("Noida", delay=90)
+                        if page:
+                            page.wait_for_timeout(600)
+                            suggestion = page.query_selector(
+                                ".basic-typeahead__selectable-result, "
+                                "[role='listbox'] [role='option'], "
+                                ".artdeco-typeahead__result, "
+                                "div.typeahead-result, "
+                                ".artdeco-typeahead__results li"
+                            )
+                            if suggestion and suggestion.is_visible():
+                                suggestion.click()
+                            else:
+                                inp.press("ArrowDown")
+                                page.wait_for_timeout(200)
+                                inp.press("Enter")
+                    except Exception:
+                        pass
+                    # Ensure value is filled if typeahead was bypassed
+                    try:
+                        if not inp.input_value() or len(inp.input_value().strip()) < 3:
+                            inp.fill(target_loc)
+                    except Exception:
+                        pass
                 elif inp.get_attribute("type") == "number":
                     inp.fill("1")
                 else:
@@ -489,7 +545,7 @@ class LinkedInScraper(BaseScraper):
 
                     for step in range(max_steps):
                         page.wait_for_timeout(800)
-                        self._fill_easy_apply_step(modal, user_profile)
+                        self._fill_easy_apply_step(modal, user_profile, page=page)
                         page.wait_for_timeout(600)
 
                         # Submit?
@@ -513,7 +569,7 @@ class LinkedInScraper(BaseScraper):
                                 try:
                                     if err.is_visible():
                                         console.print(f"[yellow]  Validation notice: {err.inner_text().strip()[:80]}[/yellow]")
-                                        self._fill_easy_apply_step(modal, user_profile)
+                                        self._fill_easy_apply_step(modal, user_profile, page=page)
                                         page.wait_for_timeout(400)
                                         self._click_modal_button(page, modal, ["Next", "Continue to next step"])
                                         page.wait_for_timeout(1500)

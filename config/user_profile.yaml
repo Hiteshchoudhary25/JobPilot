@@ -2,8 +2,8 @@ personal_info:
   full_name: Hitesh Choudhary
   email: hiteshchoudhary2508@gmail.com
   phone: +91 6375807336
-  location: Noida, India
-  current_city: Noida
+  location: Noida, Uttar Pradesh, India
+  current_city: Noida, Uttar Pradesh, India
   linkedin_url: https://www.linkedin.com/in/hiteshchoudhary25/
   github_url: https://github.com/Hiteshchoudhary25
   # portfolio_url: https://alexjohnson.dev
@@ -17,6 +17,10 @@ work_authorization:
 compensation_and_notice:
   current_ctc_lpa: 4.25
   expected_ctc_lpa: 6.00
+  current_ctc_inr: 425000
+  expected_ctc_inr: 600000
+  current_ctc_hundreds: 4250
+  expected_ctc_hundreds: 6000
   notice_period_days: 30
   negotiable_notice_period: true
 skills:
