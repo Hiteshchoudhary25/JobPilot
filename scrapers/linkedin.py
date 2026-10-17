@@ -355,34 +355,96 @@ class LinkedInScraper(BaseScraper):
                 pass
 
         # 2. Autofill Radio Button Groups via AI option selection
-        fieldsets = modal.query_selector_all("fieldset, div[data-test-form-builder-radio-button-form-component]")
-        for fs in fieldsets:
+        radios = modal.query_selector_all("input[type='radio']")
+        radio_groups = {}
+        for r in radios:
+            r_name = r.get_attribute("name") or r.get_attribute("aria-label") or r.evaluate("""el => {
+                const p = el.closest('fieldset, [role="radiogroup"], .fb-dash-form-element, [data-test-form-element]');
+                return p ? (p.id || p.innerText.slice(0, 40)) : Math.random().toString();
+            }""")
+            if r_name not in radio_groups:
+                radio_groups[r_name] = []
+            radio_groups[r_name].append(r)
+
+        for group_name, group_radios in radio_groups.items():
             try:
-                checked = fs.query_selector("input[type='radio']:checked")
-                if checked:
-                    continue  # Already selected
+                # Check if already answered
+                already_checked = any(r.is_checked() for r in group_radios)
+                # Check if group has a validation notice
+                first_r = group_radios[0]
+                has_error = False
+                try:
+                    has_error = first_r.evaluate("""el => {
+                        const fs = el.closest('fieldset, [role=\"radiogroup\"], div');
+                        if (!fs) return false;
+                        const err = fs.querySelector('.artdeco-inline-feedback--error, [data-test-form-element-error-messages], p[class*=\"error\"], span[class*=\"error\"]');
+                        return !!(err && err.innerText.trim().length > 0);
+                    }""")
+                except Exception:
+                    pass
 
-                legend = fs.query_selector("legend, label, span.fb-dash-form-element__label, span")
-                legend_text = (legend.inner_text().strip() if legend else "")
-
-                radios = fs.query_selector_all("input[type='radio']")
-                if not radios:
+                if already_checked and not has_error:
                     continue
 
-                radio_options = []
-                for r in radios:
-                    r_id = r.get_attribute("id") or ""
-                    r_lbl = fs.query_selector(f"label[for='{r_id}']")
-                    lbl_txt = (r_lbl.inner_text().strip() if r_lbl else "") or (r.get_attribute("value") or "")
-                    radio_options.append((r, lbl_txt))
+                # 1. Extract Question text (in modern LinkedIn, question is in aria-label of the input)
+                q_text = first_r.get_attribute("aria-label") or ""
+                if not q_text:
+                    q_text = first_r.evaluate("""el => {
+                        const fs = el.closest('fieldset, [role=\"radiogroup\"], div');
+                        if (!fs) return '';
+                        const legend = fs.querySelector('legend, h3, h4, span.fb-dash-form-element__label, p');
+                        if (legend && legend.innerText) return legend.innerText.trim();
+                        const prev = fs.previousElementSibling;
+                        if (prev && prev.innerText) return prev.innerText.trim();
+                        return '';
+                    }""")
 
-                option_labels = [opt[1] for opt in radio_options if opt[1]]
-                if option_labels:
-                    chosen_label = self.llm.choose_best_option(legend_text, option_labels, user_profile)
-                    for r_elem, lbl_txt in radio_options:
-                        if lbl_txt.strip().lower() == chosen_label.strip().lower() or chosen_label.strip().lower() in lbl_txt.strip().lower():
-                            r_elem.check(force=True)
+                # 2. Extract option text for each radio button in this group
+                opt_map = []
+                for r in group_radios:
+                    opt_text = r.evaluate("""el => {
+                        let p = el.parentElement ? el.parentElement.nextElementSibling : null;
+                        if (p && p.innerText) return p.innerText.trim();
+                        let parent = el.closest('div.i0lmvo, .i0ligt') || el.parentElement.parentElement;
+                        if (parent) {
+                            let textEl = parent.querySelector('p, span:not([class*=\"icon\"])');
+                            if (textEl && textEl.innerText) return textEl.innerText.trim();
+                            return parent.innerText.trim();
+                        }
+                        const r_id = el.id;
+                        const lbl = r_id ? document.querySelector(`label[for='${r_id}']`) : null;
+                        if (lbl && lbl.innerText) return lbl.innerText.trim();
+                        return el.value || '';
+                    }""")
+                    if opt_text:
+                        opt_map.append((r, opt_text))
+
+                if opt_map:
+                    opt_labels = [o[1] for o in opt_map]
+                    chosen_label = self.llm.choose_best_option(q_text, opt_labels, user_profile)
+                    matched_r = None
+                    for r_elem, txt in opt_map:
+                        if txt.lower() == chosen_label.lower() or chosen_label.lower() in txt.lower():
+                            matched_r = r_elem
                             break
+                    if not matched_r:
+                        matched_r = opt_map[0][0]
+
+                    try:
+                        matched_r.scroll_into_view_if_needed()
+                        matched_r.check(force=True)
+                        matched_r.dispatch_event("input")
+                        matched_r.dispatch_event("change")
+                    except Exception:
+                        pass
+                    # Click container/label to trigger React state updates
+                    try:
+                        matched_r.evaluate("""el => {
+                            let parent = el.closest('div.i0lmvo, .i0ligt') || el.parentElement;
+                            if (parent) parent.click();
+                        }""")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -448,21 +510,54 @@ class LinkedInScraper(BaseScraper):
             except Exception:
                 pass
 
-        # 4. Checkboxes (terms, agreements, acknowledgments)
+        # 5. Autofill Checkboxes (terms, agreements, multi-select skill checkboxes)
         checkboxes = modal.query_selector_all("input[type='checkbox']")
         for cb in checkboxes:
             try:
-                cb_id = cb.get_attribute("id") or ""
-                lbl = modal.query_selector(f"label[for='{cb_id}']")
-                lbl_text = (lbl.inner_text().lower() if lbl else "")
-                parent_box = cb.evaluate_handle("el => el.closest('.fb-dash-form-element') || el.closest('div')")
-                box_text = parent_box.inner_text().lower()[:150] if parent_box else ""
-                full_cb_text = f"{lbl_text} {box_text}"
+                cb_info = cb.evaluate("""el => {
+                    const cb_id = el.id;
+                    const lbl = cb_id ? document.querySelector(`label[for='${cb_id}']`) : el.closest('label');
+                    const lblText = lbl ? lbl.innerText.trim() : '';
+                    const parent = el.closest('fieldset, div') || el.parentElement;
+                    const pText = parent ? parent.innerText.trim() : '';
+                    const aria = el.getAttribute('aria-label') || '';
+                    const required = el.required || el.getAttribute('aria-required') === 'true';
+                    return {
+                        checked: el.checked,
+                        labelText: lblText,
+                        contextText: (lblText + ' ' + pText + ' ' + aria).toLowerCase(),
+                        required: required
+                    };
+                }""")
 
-                is_required = cb.get_attribute("required") is not None or cb.get_attribute("aria-required") == "true"
-                is_agreement = any(w in full_cb_text for w in ["agree", "acknowledge", "consent", "certify", "confirm", "terms", "understand"])
-                if (is_required or is_agreement) and not cb.is_checked():
-                    cb.check(force=True)
+                if cb_info.get("checked"):
+                    continue
+
+                full_cb_text = cb_info.get("contextText", "")
+                is_required = cb_info.get("required", False)
+
+                # Agreement / acknowledgment / consent
+                is_agreement = any(w in full_cb_text for w in [
+                    "agree", "acknowledge", "consent", "certify", "confirm", "terms", "understand",
+                    "authorized", "legally", "privacy", "policy"
+                ])
+
+                # Multi-select skill checkboxes matching candidate profile
+                user_skills = [s.lower() for s in user_profile.get("skills", {}).get("primary", [])]
+                user_skills += [s.lower() for s in user_profile.get("skills", {}).get("secondary", [])]
+                is_skill_match = any(s in full_cb_text for s in user_skills)
+
+                # Avoid "follow company" optional checkbox if not desired
+                is_follow = "follow" in full_cb_text and "company" in full_cb_text
+
+                if (is_required or is_agreement or is_skill_match) and not is_follow:
+                    try:
+                        cb.scroll_into_view_if_needed()
+                        cb.check(force=True)
+                        cb.dispatch_event("change")
+                        cb.dispatch_event("input")
+                    except Exception:
+                        cb.evaluate("el => el.click()")
             except Exception:
                 pass
 
