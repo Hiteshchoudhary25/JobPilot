@@ -309,17 +309,17 @@ class JobPilotAgent:
         else:
             self.browser_manager.interactive_login(platform)
 
-    def reset_platform(self, platform: str):
-        """Clear application records for a platform so jobs can be re-tried."""
-        if platform == "all":
-            for p in ["linkedin", "naukri"]:
-                count = self.db.reset_platform_applications(p)
-                console.print(f"[yellow]Reset {count} application records for {p.upper()}[/yellow]")
-        else:
-            count = self.db.reset_platform_applications(platform)
-            console.print(f"[bold yellow]Reset {count} application records for {platform.upper()}.[/bold yellow]")
-            console.print(f"[cyan]Jobs from {platform.upper()} can now be re-applied. Run:[/cyan]")
-            console.print(f"[bold]  python main.py apply --platform {platform} --include-db[/bold]")
+    def reset_platform(self, platform: str, hard: bool = False):
+        """Clear application records for a platform or perform a hard reset for a fresh start."""
+        if hard or platform == "all":
+            counts = self.db.clear_all_data()
+            console.print(f"[bold green]Fresh start ready: Cleared {counts['applications']} applications, {counts['jobs']} jobs, and {counts['emails']} email records from tracker.db.[/bold green]")
+            return
+
+        count = self.db.reset_platform_applications(platform)
+        console.print(f"[bold yellow]Reset {count} application records for {platform.upper()}.[/bold yellow]")
+        console.print(f"[cyan]Jobs from {platform.upper()} can now be re-applied. Run:[/cyan]")
+        console.print(f"[bold]  python main.py apply --platform {platform} --include-db[/bold]")
 
 def main():
     parser = argparse.ArgumentParser(description="JobPilot - Autonomous Job Search & Application Agent")
@@ -331,6 +331,8 @@ def main():
                         help="Platform to target")
     parser.add_argument("--include-db", action="store_true",
                         help="Also retry previously discovered jobs stored in DB (use with apply/run)")
+    parser.add_argument("--hard", action="store_true",
+                        help="Completely clear all jobs, applications, and emails for a fresh start")
 
     args = parser.parse_args()
     agent = JobPilotAgent()
@@ -370,7 +372,12 @@ def main():
     elif args.command == "login":
         agent.login_platform(args.platform)
     elif args.command == "reset":
-        agent.reset_platform(args.platform)
+        agent.reset_platform(args.platform, hard=args.hard)
+        try:
+            from dashboard import generate_dashboard
+            generate_dashboard(auto_open=False)
+        except Exception:
+            pass
     elif args.command == "dashboard":
         from dashboard import serve_dashboard
         serve_dashboard()

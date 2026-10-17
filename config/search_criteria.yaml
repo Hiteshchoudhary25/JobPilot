@@ -63,8 +63,8 @@ search_parameters:
     - Hyderabad
     - Bangalore
   experience_range_years:
-    min: 1
-    max: 2
+    min: 0
+    max: 1
   job_types:
     - Full-time
   workplace_types:

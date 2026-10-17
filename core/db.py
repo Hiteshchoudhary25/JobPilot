@@ -190,3 +190,23 @@ class Database:
             conn.commit()
             return True
 
+    def clear_all_data(self) -> Dict[str, int]:
+        """Clears all jobs, applications, and email records from the database.
+        Returns deleted counts per table."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM emails")
+            emails_deleted = cursor.rowcount
+            cursor.execute("DELETE FROM applications")
+            apps_deleted = cursor.rowcount
+            cursor.execute("DELETE FROM jobs")
+            jobs_deleted = cursor.rowcount
+            conn.commit()
+            cursor.execute("VACUUM")
+            return {
+                "jobs": jobs_deleted,
+                "applications": apps_deleted,
+                "emails": emails_deleted
+            }
+
+

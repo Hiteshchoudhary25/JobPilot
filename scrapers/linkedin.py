@@ -180,38 +180,112 @@ class LinkedInScraper(BaseScraper):
         text_inputs = modal.query_selector_all("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='file']), textarea")
         for inp in text_inputs:
             try:
-                curr_val = inp.input_value()
-                if curr_val and len(curr_val.strip()) > 0:
-                    continue  # Already pre-filled by LinkedIn
-
+                curr_val = (inp.input_value() or "").strip()
                 inp_id = inp.get_attribute("id") or ""
                 label_el = modal.query_selector(f"label[for='{inp_id}']") if inp_id else None
                 label_text = label_el.inner_text().lower() if label_el else ""
 
                 if not label_text:
                     # Look up closest label or parent container
-                    parent_box = inp.evaluate_handle("el => el.closest('.fb-dash-form-element') || el.closest('div')")
+                    parent_box = inp.evaluate_handle("el => el.closest('.fb-dash-form-element') || el.closest('.artdeco-form-element') || el.closest('div')")
                     if parent_box:
-                        label_text = parent_box.inner_text().lower()[:120]
+                        label_text = parent_box.inner_text().lower()[:150]
 
-                # Match question type
-                if any(w in label_text for w in ["phone", "mobile", "contact"]):
+                placeholder = (inp.get_attribute("placeholder") or "").lower()
+                aria_label = (inp.get_attribute("aria-label") or "").lower()
+                combined_label = f"{label_text} {placeholder} {aria_label}"
+
+                # Has validation error?
+                has_error = False
+                try:
+                    has_error = inp.evaluate("el => !!el.closest('.artdeco-inline-feedback--error, .fb-dash-form-element--error, [data-test-form-element-error-messages]') || el.getAttribute('aria-invalid') === 'true'")
+                except Exception:
+                    pass
+
+                # 1. Location / City / Address handling
+                if any(w in combined_label for w in ["city", "location", "address"]):
+                    target_loc = personal.get("location", "Noida, Uttar Pradesh, India")
+                    # If already filled with full target location and no validation error, skip
+                    if curr_val.lower() == target_loc.lower() and not has_error:
+                        continue
+
+                    try:
+                        inp.click()
+                        inp.fill("")
+                        if page:
+                            page.wait_for_timeout(200)
+                        # Type 'Noida' to trigger LinkedIn's typeahead API
+                        inp.press_sequentially("Noida", delay=100)
+                        if page:
+                            page.wait_for_timeout(800)
+                            # Locate suggestion matching Noida, Uttar Pradesh, India
+                            selected = page.evaluate("""() => {
+                                const items = Array.from(document.querySelectorAll(
+                                    ".basic-typeahead__selectable-result, [role='listbox'] [role='option'], .artdeco-typeahead__result, div.typeahead-result, .artdeco-typeahead__results li, div[role='option'], li[role='option']"
+                                ));
+                                const match = items.find(el => {
+                                    const t = (el.textContent || '').toLowerCase();
+                                    return t.includes('noida, uttar pradesh') || t.includes('noida, up');
+                                }) || items.find(el => (el.textContent || '').toLowerCase().includes('noida'))
+                                   || items[0];
+                                if (match) {
+                                    match.click();
+                                    return true;
+                                }
+                                return false;
+                            }""")
+                            if not selected:
+                                inp.press("ArrowDown")
+                                page.wait_for_timeout(200)
+                                inp.press("Enter")
+                            page.wait_for_timeout(400)
+                    except Exception:
+                        pass
+
+                    # Ensure input has the target location text if typeahead didn't close
+                    try:
+                        val_now = (inp.input_value() or "").strip()
+                        if not val_now or "uttar pradesh" not in val_now.lower():
+                            inp.fill(target_loc)
+                            inp.dispatch_event("input")
+                            inp.dispatch_event("change")
+                            inp.dispatch_event("blur")
+                    except Exception:
+                        pass
+                    continue
+
+                # 2. Phone / Mobile
+                if any(w in combined_label for w in ["phone", "mobile", "contact"]):
+                    if curr_val and len(curr_val) >= 10 and not has_error:
+                        continue
                     inp.fill(str(personal.get("phone", "6375807336")))
-                elif "email" in label_text:
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
+                    continue
+
+                # 3. Email
+                if "email" in combined_label:
+                    if curr_val and "@" in curr_val and not has_error:
+                        continue
                     inp.fill(personal.get("email", "hiteshchoudhary2508@gmail.com"))
-                elif any(w in label_text for w in ["experience", "years", "how many"]):
-                    inp.fill(str(answers.get("years_of_experience", 1)))
-                elif any(w in label_text for w in ["ctc", "salary", "compensation", "package", "pay"]):
-                    is_expected = any(w in label_text for w in ["expected", "desired", "target", "look"])
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
+                    continue
+
+                # 4. CTC / Compensation / Salary
+                if any(w in combined_label for w in ["ctc", "salary", "compensation", "package", "pay"]):
+                    if curr_val and not has_error:
+                        continue
+                    is_expected = any(w in combined_label for w in ["expected", "desired", "target", "look"])
                     min_attr = inp.get_attribute("min") or ""
                     step_attr = inp.get_attribute("step") or ""
-                    is_hundreds = any(w in label_text for w in ["100", "hundred", "hundreds"])
-                    is_thousands = any(w in label_text for w in ["thousand", "thousands", "'000", "in k"])
-                    is_lakhs = any(w in label_text for w in ["lpa", "lakh", "lakhs", "lac", "lacs"])
+                    is_hundreds = any(w in combined_label for w in ["100", "hundred", "hundreds", "/ 100", "/100", "in 100", "in hundreds"])
+                    is_thousands = any(w in combined_label for w in ["thousand", "thousands", "'000", "in k", "in 'k", "/ 1000"])
+                    is_lakhs = any(w in combined_label for w in ["lpa", "lakh", "lakhs", "lac", "lacs", "in lakhs", "in lpa"])
                     is_full_inr = (
-                        any(w in label_text for w in ["inr", "rupee", "rupees", "per annum", "annual", "full", "whole", "exact", "0000"]) or
+                        any(w in combined_label for w in ["inr", "rupee", "rupees", "per annum", "annual", "full", "whole", "exact", "0000"]) or
                         (min_attr.isdigit() and int(min_attr) >= 10000) or
-                        (step_attr == "1" and not is_lakhs)
+                        (step_attr == "1" and not is_lakhs and not is_hundreds)
                     )
 
                     if is_expected:
@@ -233,43 +307,40 @@ class LinkedInScraper(BaseScraper):
                         else:
                             val = str(comp.get("current_ctc_lpa", 4.25))
                     inp.fill(val)
-                elif "notice" in label_text:
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
+                    continue
+
+                # 5. Notice Period
+                if any(w in combined_label for w in ["notice", "serving notice"]):
+                    if curr_val and not has_error:
+                        continue
                     inp.fill(str(comp.get("notice_period_days", 30)))
-                elif any(w in label_text for w in ["city", "location", "address"]):
-                    target_loc = personal.get("location", "Noida, Uttar Pradesh, India")
-                    try:
-                        inp.click()
-                        inp.fill("")
-                        # Type city sequentially to trigger LinkedIn typeahead suggestions
-                        inp.press_sequentially("Noida", delay=90)
-                        if page:
-                            page.wait_for_timeout(600)
-                            suggestion = page.query_selector(
-                                ".basic-typeahead__selectable-result, "
-                                "[role='listbox'] [role='option'], "
-                                ".artdeco-typeahead__result, "
-                                "div.typeahead-result, "
-                                ".artdeco-typeahead__results li"
-                            )
-                            if suggestion and suggestion.is_visible():
-                                suggestion.click()
-                            else:
-                                inp.press("ArrowDown")
-                                page.wait_for_timeout(200)
-                                inp.press("Enter")
-                    except Exception:
-                        pass
-                    # Ensure value is filled if typeahead was bypassed
-                    try:
-                        if not inp.input_value() or len(inp.input_value().strip()) < 3:
-                            inp.fill(target_loc)
-                    except Exception:
-                        pass
-                elif inp.get_attribute("type") == "number":
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
+                    continue
+
+                # 6. Experience / Years
+                if any(w in combined_label for w in ["experience", "years", "how many"]):
+                    if curr_val and not has_error:
+                        continue
+                    inp.fill(str(answers.get("years_of_experience", 1)))
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
+                    continue
+
+                # For other fields: if already filled and valid, leave it
+                if curr_val and not has_error:
+                    continue
+
+                # Generic number or text
+                if inp.get_attribute("type") == "number":
                     inp.fill("1")
                 else:
-                    ans = self.llm.answer_form_question(label_text, user_profile)
+                    ans = self.llm.answer_form_question(combined_label, user_profile)
                     inp.fill(ans[:50])
+                inp.dispatch_event("input")
+                inp.dispatch_event("change")
             except Exception:
                 pass
 
@@ -328,7 +399,25 @@ class LinkedInScraper(BaseScraper):
             except Exception:
                 pass
 
-        # 4. Upload Resume if required and none selected
+        # 4. Checkboxes (terms, agreements, acknowledgments)
+        checkboxes = modal.query_selector_all("input[type='checkbox']")
+        for cb in checkboxes:
+            try:
+                cb_id = cb.get_attribute("id") or ""
+                lbl = modal.query_selector(f"label[for='{cb_id}']")
+                lbl_text = (lbl.inner_text().lower() if lbl else "")
+                parent_box = cb.evaluate_handle("el => el.closest('.fb-dash-form-element') || el.closest('div')")
+                box_text = parent_box.inner_text().lower()[:150] if parent_box else ""
+                full_cb_text = f"{lbl_text} {box_text}"
+
+                is_required = cb.get_attribute("required") is not None or cb.get_attribute("aria-required") == "true"
+                is_agreement = any(w in full_cb_text for w in ["agree", "acknowledge", "consent", "certify", "confirm", "terms", "understand"])
+                if (is_required or is_agreement) and not cb.is_checked():
+                    cb.check(force=True)
+            except Exception:
+                pass
+
+        # 5. Upload Resume if required and none selected
         file_input = modal.query_selector("input[type='file']")
         if file_input:
             try:
@@ -357,72 +446,135 @@ class LinkedInScraper(BaseScraper):
         return ctx, ctx, pg
 
     def _find_apply_button(self, page):
-        """Find the Easy Apply or Apply button/link using multiple strategies.
+        """Find the Easy Apply or Apply button/link using scoped top-card strategies.
         Returns (element_handle, is_easy_apply, direct_apply_url) or (None, False, None)."""
-        # Strategy 1: Evaluate DOM for a, button, [role='button']
         try:
             res = page.evaluate("""() => {
-                const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
-                // 1. Search for Easy Apply first
-                for (const el of elements) {
-                    const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
-                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                    const href = el.getAttribute('href') || '';
-                    if (text.includes('easy apply') || aria.includes('easy apply') || href.includes('openSDUIApplyFlow') || href.includes('/apply/')) {
-                        return { found: true, is_easy: true, href: href || null, text: text || aria };
+                const containers = [
+                    document.querySelector('.jobs-apply-button--top-card'),
+                    document.querySelector('.jobs-unified-top-card'),
+                    document.querySelector("[data-view-name='job-details']"),
+                    document.querySelector('.job-details-jobs-unified-top-card__container--two-pane'),
+                    document.querySelector('.jobs-details__main-content'),
+                    document.querySelector('.jobs-search__job-details--container'),
+                    document
+                ];
+
+                for (const root of containers) {
+                    if (!root) continue;
+                    const elements = Array.from(root.querySelectorAll("button, a, [role='button']"));
+
+                    // 1. Easy Apply search
+                    for (const el of elements) {
+                        if (!el.offsetParent && el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+                        const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const href = el.getAttribute('href') || '';
+                        const cls = (el.className || '').toString().toLowerCase();
+
+                        // Exclude similar jobs, search result links, and recommendation cards
+                        if (href.includes('search-results') || href.includes('/jobs/search') || href.includes('origin=JobSearchOrigin')) {
+                            continue;
+                        }
+                        if (text.includes('promoted') || text.includes('repost') || text.includes('applicant') || text.includes('viewed') || text.includes('similar')) {
+                            continue;
+                        }
+
+                        const isEasy = (
+                            text === 'easy apply' ||
+                            text.startsWith('easy apply') ||
+                            aria.includes('easy apply') ||
+                            (cls.includes('jobs-apply-button') && (text.includes('easy') || aria.includes('easy')))
+                        );
+                        if (isEasy && text.length < 35) {
+                            return { found: true, is_easy: true, text: text || aria };
+                        }
                     }
-                }
-                // 2. Search for External Apply
-                for (const el of elements) {
-                    const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
-                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                    const cls = (el.className || '').toString().toLowerCase();
-                    if ((text === 'apply' || text.startsWith('apply ') || aria.includes('apply') || cls.includes('jobs-apply-button')) && !text.includes('easy')) {
-                        return { found: true, is_easy: false, href: el.getAttribute('href') || null, text: text || aria };
+
+                    // 2. External Apply search
+                    for (const el of elements) {
+                        if (!el.offsetParent && el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+                        const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const href = el.getAttribute('href') || '';
+                        const cls = (el.className || '').toString().toLowerCase();
+
+                        if (href.includes('search-results') || href.includes('/jobs/search') || href.includes('origin=JobSearchOrigin')) {
+                            continue;
+                        }
+                        if (text.includes('promoted') || text.includes('repost') || text.includes('similar')) {
+                            continue;
+                        }
+
+                        const isApply = (
+                            text === 'apply' ||
+                            text.startsWith('apply on') ||
+                            text.startsWith('apply to') ||
+                            aria.startsWith('apply to') ||
+                            (cls.includes('jobs-apply-button') && !text.includes('easy'))
+                        );
+                        if (isApply && text.length < 40) {
+                            return { found: true, is_easy: false, text: text || aria, href: href || null };
+                        }
                     }
                 }
                 return { found: false };
             }""")
+
             if res and res.get("found"):
                 is_easy = res.get("is_easy", False)
-                href = res.get("href")
                 btn_text = res.get("text", "")
                 console.print(f"[dim]  Found apply element ({'Easy Apply' if is_easy else 'External'}): '{btn_text}'[/dim]")
+
                 if is_easy:
-                    handle = page.evaluate_handle("""() => {
-                        const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
-                        return elements.find(el => {
-                            const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
-                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                            const h = el.getAttribute('href') || '';
-                            return text.includes('easy apply') || aria.includes('easy apply') || h.includes('openSDUIApplyFlow') || h.includes('/apply/');
-                        }) || null;
-                    }""")
+                    for sel in [
+                        ".jobs-apply-button--top-card button",
+                        ".jobs-unified-top-card button.jobs-apply-button",
+                        "[data-view-name='job-details'] button:has-text('Easy Apply')",
+                        "button:has-text('Easy Apply')",
+                        "[aria-label*='Easy Apply to']"
+                    ]:
+                        try:
+                            loc = page.locator(sel).first
+                            if loc.is_visible():
+                                return loc.element_handle(), True, None
+                        except Exception:
+                            continue
                 else:
-                    handle = page.evaluate_handle("""() => {
-                        const elements = Array.from(document.querySelectorAll("a, button, [role='button']"));
-                        return elements.find(el => {
-                            const text = (el.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
-                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                            const cls = (el.className || '').toString().toLowerCase();
-                            return (text === 'apply' || text.startsWith('apply ') || aria.includes('apply') || cls.includes('jobs-apply-button')) && !text.includes('easy');
-                        }) || null;
-                    }""")
-                elem = handle.as_element()
-                return elem, is_easy, href
+                    for sel in [
+                        ".jobs-apply-button--top-card a",
+                        ".jobs-unified-top-card a.jobs-apply-button",
+                        "[data-view-name='job-details'] a:has-text('Apply')",
+                        "a:has-text('Apply')",
+                        "button:has-text('Apply')"
+                    ]:
+                        try:
+                            loc = page.locator(sel).first
+                            if loc.is_visible():
+                                return loc.element_handle(), False, loc.get_attribute("href")
+                        except Exception:
+                            continue
         except Exception as e:
             console.print(f"[dim]  _find_apply_button note: {e}[/dim]")
 
-        # Strategy 2: Fallback Playwright locators
-        for sel in ["a:has-text('Easy Apply')", "button:has-text('Easy Apply')", "[aria-label*='Easy Apply']"]:
+        # Strategy 2: Fallback Playwright locators scoped to top-card
+        for sel in [
+            ".jobs-apply-button--top-card button",
+            "button:has-text('Easy Apply')",
+            "[aria-label*='Easy Apply to']"
+        ]:
             try:
                 loc = page.locator(sel).first
                 if loc.is_visible():
-                    return loc.element_handle(), True, loc.get_attribute("href")
+                    return loc.element_handle(), True, None
             except Exception:
                 continue
 
-        for sel in ["a:has-text('Apply')", "button:has-text('Apply')", ".jobs-apply-button"]:
+        for sel in [
+            ".jobs-apply-button--top-card a",
+            "a:has-text('Apply')",
+            "button:has-text('Apply')"
+        ]:
             try:
                 loc = page.locator(sel).first
                 if loc.is_visible():
@@ -433,18 +585,18 @@ class LinkedInScraper(BaseScraper):
         return None, False, None
 
     def _click_modal_button(self, page, modal, texts: list) -> bool:
-        """Click the first visible button in modal matching any of the given texts."""
+        """Click the first visible, enabled button in modal matching any of the given texts."""
         for text in texts:
             try:
                 loc = modal.locator(f"button:has-text('{text}')").first
-                if loc.is_visible():
+                if loc.is_visible() and loc.is_enabled():
                     loc.click()
                     return True
             except Exception:
                 pass
             try:
                 btn = modal.query_selector(f"button[aria-label*='{text}']")
-                if btn and btn.is_visible():
+                if btn and btn.is_visible() and btn.is_enabled():
                     btn.click()
                     return True
             except Exception:
@@ -570,12 +722,27 @@ class LinkedInScraper(BaseScraper):
                                     if err.is_visible():
                                         console.print(f"[yellow]  Validation notice: {err.inner_text().strip()[:80]}[/yellow]")
                                         self._fill_easy_apply_step(modal, user_profile, page=page)
-                                        page.wait_for_timeout(400)
+                                        page.wait_for_timeout(600)
                                         self._click_modal_button(page, modal, ["Next", "Continue to next step"])
                                         page.wait_for_timeout(1500)
                                 except Exception:
                                     pass
                             continue
+
+                        # Primary footer button fallback (e.g. Next / Review / Submit with dynamic text)
+                        primary_btn = modal.locator("footer button.artdeco-button--primary").first
+                        try:
+                            if primary_btn.is_visible() and primary_btn.is_enabled():
+                                btn_text = (primary_btn.inner_text() or "").lower()
+                                console.print(f"[cyan]  Clicking primary modal action: '{btn_text}'[/cyan]")
+                                primary_btn.click()
+                                page.wait_for_timeout(2000)
+                                if "submit" in btn_text:
+                                    submitted = True
+                                    break
+                                continue
+                        except Exception:
+                            pass
 
                         # No recognizable button — modal may be finished or stuck
                         break
