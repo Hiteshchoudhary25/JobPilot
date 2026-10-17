@@ -333,69 +333,118 @@ class LinkedInScraper(BaseScraper):
                 if curr_val and not has_error:
                     continue
 
-                # Generic number or text
-                if inp.get_attribute("type") == "number":
-                    inp.fill("1")
-                else:
-                    ans = self.llm.answer_form_question(combined_label, user_profile)
-                    inp.fill(ans[:50])
-                inp.dispatch_event("input")
-                inp.dispatch_event("change")
+                # Generic number, text, or textarea questions answered via AI model
+                inp_type = inp.get_attribute("type") or "text"
+                tag_name = inp.evaluate("el => el.tagName.toLowerCase()")
+                max_len = None
+                max_attr = inp.get_attribute("maxlength")
+                if max_attr and max_attr.isdigit():
+                    max_len = int(max_attr)
+
+                ans = self.llm.answer_form_question(
+                    combined_label,
+                    user_profile,
+                    input_type="number" if inp_type == "number" else "text",
+                    max_length=max_len or (300 if tag_name == "textarea" else 100)
+                )
+                if ans:
+                    inp.fill(ans)
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
             except Exception:
                 pass
 
-        # 2. Autofill Radio Button Groups (Yes/No Questions)
+        # 2. Autofill Radio Button Groups via AI option selection
         fieldsets = modal.query_selector_all("fieldset, div[data-test-form-builder-radio-button-form-component]")
         for fs in fieldsets:
             try:
-                legend = fs.query_selector("legend, label, span")
-                legend_text = legend.inner_text().lower() if legend else ""
+                checked = fs.query_selector("input[type='radio']:checked")
+                if checked:
+                    continue  # Already selected
 
-                # Target answer logic
-                if any(w in legend_text for w in ["sponsorship", "visa required", "require sponsorship"]):
-                    target_choice = "no"
-                elif any(w in legend_text for w in ["authorized", "legally", "commute", "relocate", "comfortable", "experience", "background"]):
-                    target_choice = "yes"
-                else:
-                    target_choice = "yes"
+                legend = fs.query_selector("legend, label, span.fb-dash-form-element__label, span")
+                legend_text = (legend.inner_text().strip() if legend else "")
 
                 radios = fs.query_selector_all("input[type='radio']")
+                if not radios:
+                    continue
+
+                radio_options = []
                 for r in radios:
                     r_id = r.get_attribute("id") or ""
                     r_lbl = fs.query_selector(f"label[for='{r_id}']")
-                    r_val = (r.get_attribute("value") or "").lower()
-                    full_lbl = (r_lbl.inner_text().lower() if r_lbl else "") + " " + r_val
+                    lbl_txt = (r_lbl.inner_text().strip() if r_lbl else "") or (r.get_attribute("value") or "")
+                    radio_options.append((r, lbl_txt))
 
-                    if target_choice in full_lbl:
-                        r.check(force=True)
-                        break
+                option_labels = [opt[1] for opt in radio_options if opt[1]]
+                if option_labels:
+                    chosen_label = self.llm.choose_best_option(legend_text, option_labels, user_profile)
+                    for r_elem, lbl_txt in radio_options:
+                        if lbl_txt.strip().lower() == chosen_label.strip().lower() or chosen_label.strip().lower() in lbl_txt.strip().lower():
+                            r_elem.check(force=True)
+                            break
             except Exception:
                 pass
 
-        # 3. Autofill Dropdowns (<select> and custom menus)
+        # 3. Autofill Native Dropdowns (<select>) via AI option selection
         selects = modal.query_selector_all("select")
         for sel in selects:
             try:
                 selected_val = sel.evaluate("el => el.value")
-                if not selected_val or selected_val == "":
+                if not selected_val or selected_val == "" or selected_val == "Select an option":
                     sel_id = sel.get_attribute("id") or ""
                     lbl = modal.query_selector(f"label[for='{sel_id}']")
-                    lbl_text = lbl.inner_text().lower() if lbl else ""
-
-                    target = "no" if "sponsorship" in lbl_text else "yes"
+                    lbl_text = (lbl.inner_text().strip() if lbl else "")
+                    if not lbl_text:
+                        parent_box = sel.evaluate_handle("el => el.closest('.fb-dash-form-element') || el.closest('div')")
+                        lbl_text = parent_box.inner_text().strip()[:120] if parent_box else ""
 
                     options = sel.query_selector_all("option")
-                    matched = False
+                    opt_data = []
                     for opt in options:
-                        if target in opt.inner_text().lower() and opt.get_attribute("value"):
-                            sel.select_option(value=opt.get_attribute("value"))
-                            matched = True
-                            break
-                    if not matched and len(options) > 1:
-                        # Select first non-empty option
-                        first_opt = options[1].get_attribute("value")
-                        if first_opt:
-                            sel.select_option(value=first_opt)
+                        val = opt.get_attribute("value") or ""
+                        txt = (opt.inner_text() or "").strip()
+                        if txt and txt.lower() not in ["select", "select an option", "choose", "please select", "--"]:
+                            opt_data.append((val, txt))
+
+                    if opt_data:
+                        opt_texts = [o[1] for o in opt_data]
+                        best_txt = self.llm.choose_best_option(lbl_text, opt_texts, user_profile)
+                        for val, txt in opt_data:
+                            if txt.lower() == best_txt.lower() or best_txt.lower() in txt.lower():
+                                sel.select_option(value=val)
+                                sel.dispatch_event("change")
+                                break
+            except Exception:
+                pass
+
+        # 4. Autofill Custom Dropdowns / Comboboxes via AI option selection
+        custom_dropdowns = modal.query_selector_all("div[data-test-form-builder-dropdown-form-component], div.fb-dash-form-element div[role='combobox']")
+        for cdd in custom_dropdowns:
+            try:
+                selected_item = cdd.query_selector(".artdeco-dropdown__item[aria-selected='true'], [aria-selected='true']")
+                if selected_item:
+                    continue
+
+                trigger = cdd.query_selector("button, [role='combobox']")
+                if trigger and trigger.is_visible():
+                    lbl = cdd.query_selector("label, span.fb-dash-form-element__label")
+                    lbl_text = (lbl.inner_text().strip() if lbl else "")
+                    trigger.click()
+                    if page:
+                        page.wait_for_timeout(300)
+                        opts = page.query_selector_all("[role='listbox'] [role='option'], .artdeco-dropdown__item")
+                        opt_map = []
+                        for o in opts:
+                            txt = (o.inner_text() or "").strip()
+                            if txt:
+                                opt_map.append((o, txt))
+                        if opt_map:
+                            best_choice = self.llm.choose_best_option(lbl_text, [o[1] for o in opt_map], user_profile)
+                            for o_el, txt in opt_map:
+                                if txt.lower() == best_choice.lower() or best_choice.lower() in txt.lower():
+                                    o_el.click()
+                                    break
             except Exception:
                 pass
 
@@ -744,7 +793,24 @@ class LinkedInScraper(BaseScraper):
                         except Exception:
                             pass
 
-                        # No recognizable button — modal may be finished or stuck
+                        # Check if primary button is disabled due to unfulfilled questions
+                        try:
+                            disabled_btn = modal.locator("footer button.artdeco-button--primary[disabled], footer button[disabled]").first
+                            if disabled_btn.is_visible():
+                                console.print("[dim]  Action button currently disabled — AI re-evaluating form to answer remaining questions...[/dim]")
+                                self._fill_easy_apply_step(modal, user_profile, page=page)
+                                page.wait_for_timeout(800)
+                                if self._click_modal_button(page, modal, ["Submit application", "Submit"]):
+                                    page.wait_for_timeout(4000)
+                                    submitted = True
+                                    break
+                                if self._click_modal_button(page, modal, ["Review", "Review your application", "Next", "Continue to next step"]):
+                                    page.wait_for_timeout(1500)
+                                    continue
+                        except Exception:
+                            pass
+
+                        # No recognizable or actionable button — break to avoid infinite loop
                         break
 
                     if submitted:

@@ -148,7 +148,7 @@ class NaukriScraper(BaseScraper):
                 try:
                     # Get question text
                     q_el = grp.query_selector("label, p, span, legend")
-                    q_text = q_el.inner_text().lower() if q_el else ""
+                    q_text = q_el.inner_text().strip() if q_el else ""
 
                     radios = grp.query_selector_all("input[type='radio']")
                     if not radios:
@@ -158,45 +158,33 @@ class NaukriScraper(BaseScraper):
                     if not radios:
                         continue
 
-                    # Decide which option to pick
-                    target_text = None
-                    if any(w in q_text for w in ["years of experience", "experience", "how many years"]):
-                        yoe = int(answers.get("years_of_experience", 1))
-                        target_text = "less than 5" if yoe < 5 else "more than 5"
-                    elif any(w in q_text for w in ["notice", "joining"]):
-                        target_text = str(comp.get("notice_period_days", 30))
-                    elif any(w in q_text for w in ["current", "ctc", "salary", "compensation"]):
-                        target_text = str(comp.get("current_ctc_lpa", 4.25))
-                    elif any(w in q_text for w in ["expected", "expect"]):
-                        target_text = str(comp.get("expected_ctc_lpa", 6.0))
-                    elif any(w in q_text for w in ["location", "city", "relocat"]):
-                        target_text = "yes"
-                    elif any(w in q_text for w in ["work from home", "remote", "wfh"]):
-                        target_text = "yes"
-                    else:
-                        target_text = "yes"  # safe default
-
-                    # Try clicking the best matching radio/option
-                    clicked = False
+                    # Collect option texts
+                    opt_map = []
                     for r in radios:
                         try:
-                            r_text = r.inner_text().lower() if hasattr(r, "inner_text") else ""
+                            r_text = r.inner_text().strip() if hasattr(r, "inner_text") else ""
                             if not r_text:
                                 lbl_id = r.get_attribute("id")
                                 lbl = popup.query_selector(f"label[for='{lbl_id}']")
-                                r_text = lbl.inner_text().lower() if lbl else ""
-                            r_val = (r.get_attribute("value") or "").lower()
-                            combined = r_text + " " + r_val
-
-                            if target_text and target_text in combined:
-                                r.click()
-                                clicked = True
-                                break
+                                r_text = lbl.inner_text().strip() if lbl else ""
+                            if not r_text:
+                                r_text = r.get_attribute("value") or ""
+                            if r_text:
+                                opt_map.append((r, r_text))
                         except Exception:
                             continue
 
-                    if not clicked and radios:
-                        # Fall back: click first option
+                    if opt_map:
+                        opt_texts = [o[1] for o in opt_map]
+                        chosen_opt = self.llm.choose_best_option(q_text, opt_texts, user_profile)
+                        for r_el, txt in opt_map:
+                            if txt.lower() == chosen_opt.lower() or chosen_opt.lower() in txt.lower():
+                                try:
+                                    r_el.click()
+                                except Exception:
+                                    pass
+                                break
+                    elif radios:
                         try:
                             radios[0].click()
                         except Exception:
@@ -213,22 +201,24 @@ class NaukriScraper(BaseScraper):
                         continue  # already filled
                     inp_id = inp.get_attribute("id") or inp.get_attribute("name") or ""
                     lbl = popup.query_selector(f"label[for='{inp_id}']")
-                    lbl_text = lbl.inner_text().lower() if lbl else inp_id.lower()
+                    lbl_text = lbl.inner_text().strip() if lbl else inp_id
 
-                    if any(w in lbl_text for w in ["phone", "mobile"]):
+                    inp_type = inp.get_attribute("type") or "text"
+                    if any(w in lbl_text.lower() for w in ["phone", "mobile"]):
                         inp.fill(str(personal.get("phone", "6375807336")))
-                    elif "email" in lbl_text:
+                    elif "email" in lbl_text.lower():
                         inp.fill(personal.get("email", "hiteshchoudhary2508@gmail.com"))
-                    elif any(w in lbl_text for w in ["experience", "years"]):
-                        inp.fill(str(answers.get("years_of_experience", 1)))
-                    elif any(w in lbl_text for w in ["current", "ctc", "salary"]):
-                        inp.fill(str(comp.get("current_ctc_lpa", 4.25)))
-                    elif any(w in lbl_text for w in ["expected", "expect"]):
-                        inp.fill(str(comp.get("expected_ctc_lpa", 6.0)))
-                    elif "notice" in lbl_text:
-                        inp.fill(str(comp.get("notice_period_days", 30)))
+                    elif any(w in lbl_text.lower() for w in ["city", "location"]):
+                        inp.fill(personal.get("location", "Noida, Uttar Pradesh, India"))
                     else:
-                        inp.fill("1")
+                        ans = self.llm.answer_form_question(
+                            lbl_text,
+                            user_profile,
+                            input_type="number" if inp_type == "number" else "text"
+                        )
+                        inp.fill(ans)
+                    inp.dispatch_event("input")
+                    inp.dispatch_event("change")
                 except Exception:
                     continue
 
@@ -237,10 +227,21 @@ class NaukriScraper(BaseScraper):
             for sel in selects:
                 try:
                     val = sel.evaluate("el => el.value")
-                    if not val:
+                    if not val or val == "0" or "select" in val.lower():
                         options = sel.query_selector_all("option")
-                        if len(options) > 1:
-                            sel.select_option(index=1)
+                        opt_data = []
+                        for opt in options:
+                            opt_val = opt.get_attribute("value") or ""
+                            txt = (opt.inner_text() or "").strip()
+                            if txt and txt.lower() not in ["select", "select an option", "choose", "please select", "--"]:
+                                opt_data.append((opt_val, txt))
+                        if opt_data:
+                            best = self.llm.choose_best_option("", [o[1] for o in opt_data], user_profile)
+                            for opt_val, txt in opt_data:
+                                if txt.lower() == best.lower() or best.lower() in txt.lower():
+                                    sel.select_option(value=opt_val)
+                                    sel.dispatch_event("change")
+                                    break
                 except Exception:
                     continue
 
