@@ -635,21 +635,43 @@ class LinkedInScraper(BaseScraper):
 
     def _click_modal_button(self, page, modal, texts: list) -> bool:
         """Click the first visible, enabled button in modal matching any of the given texts."""
+        # 1. Try page-level locators scoped to modal/dialog
         for text in texts:
+            for sel in [
+                f"dialog[open] button:has-text('{text}')",
+                f"div[role='dialog'] button:has-text('{text}')",
+                f".jobs-easy-apply-modal button:has-text('{text}')",
+                f"button:has-text('{text}')",
+                f"dialog[open] button[aria-label*='{text}']",
+                f"div[role='dialog'] button[aria-label*='{text}']",
+                f"button[aria-label*='{text}']"
+            ]:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.is_visible() and loc.is_enabled():
+                        loc.click()
+                        return True
+                except Exception:
+                    pass
+
+        # 2. Try modal ElementHandle query_selector_all
+        if modal:
             try:
-                loc = modal.locator(f"button:has-text('{text}')").first
-                if loc.is_visible() and loc.is_enabled():
-                    loc.click()
-                    return True
+                buttons = modal.query_selector_all("button")
+                for btn in buttons:
+                    try:
+                        b_text = (btn.inner_text() or "").strip().lower()
+                        b_aria = (btn.get_attribute("aria-label") or "").strip().lower()
+                        for text in texts:
+                            t_lower = text.lower()
+                            if (b_text == t_lower or b_text.startswith(t_lower) or t_lower in b_aria) and btn.is_visible() and btn.is_enabled():
+                                btn.click()
+                                return True
+                    except Exception:
+                        continue
             except Exception:
                 pass
-            try:
-                btn = modal.query_selector(f"button[aria-label*='{text}']")
-                if btn and btn.is_visible() and btn.is_enabled():
-                    btn.click()
-                    return True
-            except Exception:
-                pass
+
         return False
 
     def apply_job(self, job: JobPosting, user_profile: Dict[str, Any]) -> bool:
@@ -725,16 +747,31 @@ class LinkedInScraper(BaseScraper):
                             page.evaluate("arguments => arguments[0].click()", [apply_btn])
                         page.wait_for_timeout(3000)
 
-                    # Wait for modal
+                    # Wait for modal - Supports native HTML5 <dialog> and classic div modals
                     modal = None
-                    for modal_sel in ["div[role='dialog']", ".jobs-easy-apply-modal", ".artdeco-modal"]:
+                    modal_selectors = [
+                        "dialog[open]",
+                        "dialog[data-testid='dialog']",
+                        "dialog",
+                        "div[role='dialog']",
+                        "[data-testid='dialog']",
+                        ".jobs-easy-apply-modal",
+                        ".artdeco-modal"
+                    ]
+                    for modal_sel in modal_selectors:
                         try:
-                            page.wait_for_selector(modal_sel, timeout=5000, state="visible")
+                            page.wait_for_selector(modal_sel, timeout=4000, state="visible")
                             modal = page.query_selector(modal_sel)
-                            if modal:
+                            if modal and modal.is_visible():
                                 break
                         except Exception:
                             continue
+
+                    if not modal:
+                        try:
+                            modal = page.query_selector("dialog, div[role='dialog']")
+                        except Exception:
+                            pass
 
                     if not modal:
                         console.print(f"[yellow]Modal did not open for {job.company}[/yellow]")
@@ -779,7 +816,7 @@ class LinkedInScraper(BaseScraper):
                             continue
 
                         # Primary footer button fallback (e.g. Next / Review / Submit with dynamic text)
-                        primary_btn = modal.locator("footer button.artdeco-button--primary").first
+                        primary_btn = page.locator("dialog[open] footer button.artdeco-button--primary, div[role='dialog'] footer button.artdeco-button--primary, footer button.artdeco-button--primary, dialog[open] button.artdeco-button--primary").first
                         try:
                             if primary_btn.is_visible() and primary_btn.is_enabled():
                                 btn_text = (primary_btn.inner_text() or "").lower()
@@ -795,7 +832,7 @@ class LinkedInScraper(BaseScraper):
 
                         # Check if primary button is disabled due to unfulfilled questions
                         try:
-                            disabled_btn = modal.locator("footer button.artdeco-button--primary[disabled], footer button[disabled]").first
+                            disabled_btn = page.locator("dialog[open] footer button[disabled], div[role='dialog'] footer button[disabled], footer button[disabled]").first
                             if disabled_btn.is_visible():
                                 console.print("[dim]  Action button currently disabled — AI re-evaluating form to answer remaining questions...[/dim]")
                                 self._fill_easy_apply_step(modal, user_profile, page=page)
@@ -827,12 +864,12 @@ class LinkedInScraper(BaseScraper):
                     else:
                         # Dismiss modal gracefully
                         try:
-                            dismiss = modal.query_selector("button[aria-label='Dismiss']")
-                            if dismiss:
+                            dismiss = page.locator("dialog[open] button[aria-label='Dismiss'], div[role='dialog'] button[aria-label='Dismiss'], button[data-testid='dialog-close-button'], button[aria-label='Dismiss']").first
+                            if dismiss.is_visible():
                                 dismiss.click()
                                 page.wait_for_timeout(1000)
-                                discard = page.query_selector("button:has-text('Discard')")
-                                if discard:
+                                discard = page.locator("button:has-text('Discard')").first
+                                if discard.is_visible():
                                     discard.click()
                         except Exception:
                             pass
